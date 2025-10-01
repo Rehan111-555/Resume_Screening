@@ -1,6 +1,6 @@
 // app/api/generate-questions/route.ts
 import { NextRequest, NextResponse } from 'next/server';
-import { generateQuestions } from '@/utils/geminiClient.sever'; // <-- match your filename
+import { generateQuestions } from '@/utils/geminiClient.server'; // <-- match your filename
 
 export async function POST(request: NextRequest) {
   try {
@@ -16,3 +16,4 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Failed to generate questions' }, { status: 500 });
   }
 }
+
