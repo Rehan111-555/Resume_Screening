@@ -122,8 +122,11 @@ function safeParse<T = any>(raw: string): T | null {
   return null;
 }
 
+/* ---------- types to avoid never[] inference ---------- */
+type QuestionSets = { technical: string[]; educational: string[]; situational: string[] };
+
 // fallback local questions
-function localQuestions(job: any) {
+function localQuestions(job: any): QuestionSets {
   const skills: string[] = (job.requiredSkills || []).slice(0,6);
   const technical = skills.slice(0,4).map(s => `Describe a real project where you used ${s}. What was the hardest bug and how did you solve it?`);
   while (technical.length < 4) technical.push(`Walk me through a difficult technical decision you made related to ${job.title}.`);
@@ -240,7 +243,7 @@ export async function POST(req: NextRequest) {
     candidates.sort((a, b) => (b.matchScore || 0) - (a.matchScore || 0));
 
     // 4) Questions — LLM first, fallback to local templates
-    let questions = { technical: [], educational: [], situational: [] as string[] };
+    let questions: QuestionSets = { technical: [], educational: [], situational: [] };
     try {
       const top = candidates.slice(0, Math.min(3, candidates.length));
       const qRaw = await generateQuestions(jobRequirements, top);
