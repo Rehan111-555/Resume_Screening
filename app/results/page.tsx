@@ -5,7 +5,7 @@ import { useApp } from '@/contexts/AppContext';
 import CandidateCard from '@/components/CandidateCard';
 import CandidateDetail from '@/components/CandidateDetail';
 import { Candidate } from '@/types';
-import { Download, Filter, ArrowLeft, Star } from 'lucide-react';
+import { Download, Filter, ArrowLeft } from 'lucide-react';
 import { exportToCSV } from '@/utils/exportCSV';
 
 type SortField = 'matchScore' | 'yearsExperience' | 'education';
@@ -21,33 +21,23 @@ export default function ResultsPage() {
 
   const sortedCandidates = useMemo(() => {
     if (!state.analysisResult?.candidates) return [];
-
     let filtered = [...state.analysisResult.candidates];
 
-    // Filter by education
     if (filterEducation) {
-      filtered = filtered.filter(candidate => 
-        candidate.education.toLowerCase().includes(filterEducation.toLowerCase())
+      filtered = filtered.filter(c =>
+        c.education.toLowerCase().includes(filterEducation.toLowerCase())
       );
     }
 
-    // Sort candidates
     filtered.sort((a, b) => {
-      let aValue: any = a[sortField];
-      let bValue: any = b[sortField];
-
+      let aVal: any = a[sortField];
+      let bVal: any = b[sortField];
       if (sortField === 'education') {
-        // Simple education level sorting
-        const educationOrder = ['High School', 'Bachelor', 'Master', 'PhD'];
-        aValue = educationOrder.findIndex(level => a.education.includes(level));
-        bValue = educationOrder.findIndex(level => b.education.includes(level));
+        const order = ['High School', 'Bachelor', 'Master', 'PhD'];
+        aVal = order.findIndex(x => a.education.includes(x));
+        bVal = order.findIndex(x => b.education.includes(x));
       }
-
-      if (sortOrder === 'desc') {
-        return bValue - aValue;
-      } else {
-        return aValue - bValue;
-      }
+      return sortOrder === 'desc' ? bVal - aVal : aVal - bVal;
     });
 
     return filtered;
@@ -68,7 +58,7 @@ export default function ResultsPage() {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600 mx-auto mb-4"></div>
           <p className="text-gray-600">Loading results...</p>
         </div>
       </div>
@@ -76,7 +66,7 @@ export default function ResultsPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-gradient-to-b from-white via-indigo-50 to-white">
       <div className="container mx-auto px-4 py-8">
         <div className="max-w-7xl mx-auto">
           {/* Header */}
@@ -89,70 +79,25 @@ export default function ResultsPage() {
                 <ArrowLeft className="h-4 w-4 mr-2" />
                 Start Over
               </button>
-              <h1 className="text-4xl font-bold gradient-text">
+              <h1 className="text-4xl font-extrabold bg-clip-text text-transparent bg-gradient-to-r from-indigo-600 to-fuchsia-600">
                 Candidate Rankings
               </h1>
               <p className="text-gray-600 mt-2">
-                {sortedCandidates.length} candidates analyzed and ranked by AI
+                {sortedCandidates.length} candidates analyzed and ranked
               </p>
             </div>
 
             <button
               onClick={handleExport}
-              className="flex items-center px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+              className="flex items-center px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors shadow"
             >
               <Download className="h-4 w-4 mr-2" />
               Export CSV
             </button>
           </div>
 
-          {/* Questions Section */}
-          {state.analysisResult.questions && (
-            <div className="bg-white rounded-lg shadow-lg p-6 mb-8">
-              <h2 className="text-2xl font-bold gradient-text mb-6 flex items-center">
-                <Star className="h-6 w-6 mr-2 text-yellow-500" />
-                AI-Generated Interview Questions
-              </h2>
-              
-              <div className="grid md:grid-cols-3 gap-6">
-                <div>
-                  <h3 className="font-semibold text-lg text-blue-600 mb-3">Technical Questions</h3>
-                  <ul className="space-y-2">
-                    {state.analysisResult.questions.technical.map((question, index) => (
-                      <li key={index} className="text-gray-700 text-sm p-2 bg-blue-50 rounded">
-                        {question}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-                
-                <div>
-                  <h3 className="font-semibold text-lg text-green-600 mb-3">Educational Questions</h3>
-                  <ul className="space-y-2">
-                    {state.analysisResult.questions.educational.map((question, index) => (
-                      <li key={index} className="text-gray-700 text-sm p-2 bg-green-50 rounded">
-                        {question}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-                
-                <div>
-                  <h3 className="font-semibold text-lg text-purple-600 mb-3">Situational Questions</h3>
-                  <ul className="space-y-2">
-                    {state.analysisResult.questions.situational.map((question, index) => (
-                      <li key={index} className="text-gray-700 text-sm p-2 bg-purple-50 rounded">
-                        {question}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              </div>
-            </div>
-          )}
-
           {/* Controls */}
-          <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
+          <div className="bg-white rounded-xl shadow-lg p-6 mb-6 border border-gray-100">
             <div className="flex flex-wrap gap-4 items-center">
               <div className="flex items-center">
                 <Filter className="h-4 w-4 mr-2 text-gray-500" />
@@ -182,7 +127,7 @@ export default function ResultsPage() {
                   type="text"
                   value={filterEducation}
                   onChange={(e) => setFilterEducation(e.target.value)}
-                  placeholder="e.g., Master, Bachelor..."
+                  placeholder="e.g., Master, Bachelor…"
                   className="border border-gray-300 rounded px-3 py-1 text-sm"
                 />
               </div>
@@ -191,7 +136,7 @@ export default function ResultsPage() {
 
           {/* Candidate Grid */}
           <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {sortedCandidates.map((candidate, index) => (
+            {sortedCandidates.map((candidate) => (
               <CandidateCard
                 key={candidate.id}
                 candidate={candidate}
@@ -209,7 +154,6 @@ export default function ResultsPage() {
         </div>
       </div>
 
-      {/* Candidate Detail Panel */}
       <CandidateDetail
         candidate={selectedCandidate}
         isOpen={isDetailOpen}
