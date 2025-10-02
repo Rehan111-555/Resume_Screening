@@ -1,31 +1,11 @@
 export interface JobRequirements {
   title: string;
   description: string;
-  requiredSkills: string[];     // UI no longer asks; we send []
-  minYearsExperience: number;
-  educationLevel: string;
+  requiredSkills: string[];      // UI can send []
+  minYearsExperience: number;    // optional at runtime
+  educationLevel: string;        // optional at runtime
 }
 
-/* ---------- AI-generated role spec ---------- */
-export type JobSpec = {
-  title?: string;
-  minYears?: number;
-  education?: string;
-  skills: { canonical: string; aliases: string[] }[];
-  mustHaveSet: Set<string>;
-  niceToHaveSet: Set<string>;
-};
-
-/* ---------- AI-designed JSON Schema ---------- */
-export type DynamicSchema = {
-  $schema?: string;
-  title?: string;
-  type: "object";
-  properties: Record<string, any>;
-  required?: string[];
-};
-
-/* ---------- Candidate ---------- */
 export interface Candidate {
   id: string;
   name: string;
@@ -42,11 +22,9 @@ export interface Candidate {
   weaknesses: string[];
   gaps: string[];
   mentoringNeeds: string[];
-  questions?: string[];
-  dynamicProfile?: any;          // full object that matches the AI-designed schema
+  questions: string[];
 }
 
-/* ---------- API result ---------- */
 export interface AnalysisResult {
   candidates: Candidate[];
   questions: {
@@ -54,13 +32,9 @@ export interface AnalysisResult {
     educational: string[];
     situational: string[];
   };
-  meta?: {
-    dynamicSchema?: DynamicSchema;
-    jobSpec?: any; // plain object copy (Sets removed for JSON)
-  };
+  errors?: { file: string; message: string }[];
 }
 
-/* ---------- Upload ---------- */
 export interface UploadedFile {
   id: string;
   name: string;
