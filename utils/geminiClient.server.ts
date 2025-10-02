@@ -155,9 +155,13 @@ JOB DESCRIPTION:
   const niceSet = new Set<string>((data.niceToHaves || []).map((n: string) => canon(n)));
   const uniqueCanon = new Set<string>(skillsArr.map((s: { canonical: string; aliases: string[] }) => s.canonical));
 
-  // Ensure all must/nice tokens exist in skills[]
-  for (const m of mustSet) if (!uniqueCanon.has(m)) skillsArr.push({ canonical: m, aliases: [] });
-  for (const n of niceSet) if (!uniqueCanon.has(n)) skillsArr.push({ canonical: n, aliases: [] });
+  // Ensure all must/nice tokens exist in skills[]  (avoid for..of on Set)
+  Array.from(mustSet).forEach((m) => {
+    if (!uniqueCanon.has(m)) skillsArr.push({ canonical: m, aliases: [] });
+  });
+  Array.from(niceSet).forEach((n) => {
+    if (!uniqueCanon.has(n)) skillsArr.push({ canonical: n, aliases: [] });
+  });
 
   return {
     title: data.title || "",
