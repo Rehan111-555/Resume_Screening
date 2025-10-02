@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import type { ResumeProfile, Candidate } from "@/utils/geminiClient.server";
+import type { JobRequirements, Candidate, AnalysisResult, JobSpec } from "@/types";
+import { extractJobSpec, generateQuestionsForCandidate } from "@/utils/geminiClient.server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/* -------------------------- helpers -------------------------- */
-
+/* -------------------------- concurrency -------------------------- */
 function createLimiter(maxConcurrent: number) {
   let active = 0;
   const queue: Array<() => void> = [];
@@ -16,138 +16,133 @@ function createLimiter(maxConcurrent: number) {
   };
 }
 
-// very permissive date parsing
-function parseAnyDate(s?: string): Date | null {
-  if (!s) return null;
-  const clean = String(s).replace(/(\d{1,2})[.-](\d{1,2})[.-](\d{2,4})/, "$2/$1/$3"); // swap dd-mm-yyyy -> mm/dd/yyyy
-  const d = new Date(clean);
-  if (!isNaN(d.getTime())) return d;
-  // Try Month YYYY formats like "Sep 2021"
-  const m = clean.match(/([A-Za-z]{3,})\s+(\d{4})/);
-  if (m) {
-    const dt = new Date(`${m[1]} 1, ${m[2]}`);
-    if (!isNaN(dt.getTime())) return dt;
+/* ----------------------- text extraction ------------------------ */
+async function extractTextFromFile(file: File): Promise<string> {
+  const name = (file.name || "").toLowerCase();
+  const buf = Buffer.from(await file.arrayBuffer());
+
+  if (name.endsWith(".pdf")) {
+    const pdf = (await import("pdf-parse")).default;
+    const res = await pdf(buf);
+    return res.text || "";
   }
-  return null;
+  if (name.endsWith(".docx") || name.endsWith(".doc")) {
+    const mammoth = await import("mammoth");
+    const { value } = await mammoth.extractRawText({ buffer: buf });
+    return value || "";
+  }
+  return buf.toString("utf8");
 }
 
-function monthsBetween(start?: string, end?: string): number {
-  const s = parseAnyDate(start);
-  const e = parseAnyDate(end) || new Date();
-  if (!s || !e) return 0;
-  let months = (e.getFullYear() - s.getFullYear()) * 12 + (e.getMonth() - s.getMonth());
-  if (e.getDate() >= s.getDate()) months += 0; // partial month tolerance
-  return Math.max(0, months);
+/* ----------------------- normalization/fuzzy -------------------- */
+const STOP = new Set(["and","or","of","a","an","the","with","for","to","in","on","at","by","from"]);
+function normalize(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[^a-z0-9\s\+\.#&]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/(ing|ed|es|s)\b/g, "");
+}
+function fuzzyHas(haystack: string, phrase: string): boolean {
+  const H = " " + normalize(haystack) + " ";
+  const n = normalize(phrase);
+  if (!n) return false;
+  if (H.includes(` ${n} `)) return true;    // exact word/phrase boundary
+  if (H.includes(n)) return true;           // substring
+  // tiny typo tolerance (Levenshtein within 1 over small windows)
+  const L = n.length;
+  for (let i = 0; i <= H.length - L; i++) {
+    let d = 0;
+    for (let j = 0; j < L && d <= 1; j++) if (H[i + j] !== n[j]) d++;
+    if (d <= 1) return true;
+  }
+  return false;
 }
 
-function totalExperienceMonths(exp?: { start?: string; end?: string }[]): number {
-  if (!exp?.length) return 0;
-  return exp.reduce((acc, item) => acc + monthsBetween(item.start, item.end), 0);
+/* ----------------------- profile + scoring ---------------------- */
+type CandidateProfile = {
+  name: string;
+  text: string;
+  yearsExperience?: number;
+  education?: string;
+};
+
+function estimateYearsFromText(text: string): number | undefined {
+  const m = text.toLowerCase().match(/(\d{1,2})(\s*\+)?\s*(years|yrs|yr)/);
+  if (!m) return undefined;
+  return parseInt(m[1], 10);
 }
-
-function simpleEducationString(edu?: any[]): string {
-  if (!edu?.length) return "";
-  const top = edu[0];
-  const deg = [top?.degree, top?.field].filter(Boolean).join(", ");
-  const inst = top?.institution ? ` (${top.institution})` : "";
-  return (deg + inst).trim();
+function extractEducation(text: string): string | undefined {
+  const t = text.toLowerCase();
+  if (t.includes("phd")) return "PhD";
+  if (t.includes("master")) return "Master";
+  if (t.includes("bachelor") || t.includes("bsc") || t.includes("bs")) return "Bachelor";
+  if (t.includes("high school")) return "High School";
+  return undefined;
 }
-
-function eduLevelFit(required: string, eduStr: string): number {
-  const r = (required || "").toLowerCase();
-  const e = (eduStr || "").toLowerCase();
-  const map: [string, number][] = [
-    ["phd", 1], ["master", 0.85], ["msc", 0.85], ["bachelor", 0.7], ["bs", 0.7], ["bsc", 0.7],
-    ["associate", 0.5], ["diploma", 0.4], ["high school", 0.2],
-  ];
-  for (const [k, v] of map) { if (r.includes(k) && e.includes(k)) return v; }
-  if (r.includes("bachelor") && e) return 0.6;
-  return e ? 0.4 : 0;
-}
-
-function skillsOverlap(required: string[], have?: string[]): { ratio: number; matched: string[]; missing: string[] } {
-  const req = (required || []).map(s => s.toLowerCase().trim()).filter(Boolean);
-  const hs = new Set((have || []).map(s => s.toLowerCase().trim()).filter(Boolean));
-  const matched = req.filter(s => hs.has(s));
-  const missing = req.filter(s => !hs.has(s));
-  const ratio = req.length ? matched.length / req.length : 1;
-  return { ratio, matched, missing };
-}
-
-// local score + strengths/weaknesses/gaps
-function localAnalysis(job: any, profile: ResumeProfile) {
-  const months = totalExperienceMonths(profile.experience);
-  const years = months / 12;
-  const eduStr = simpleEducationString(profile.education);
-  const eduFit = eduLevelFit(job.educationLevel || "", eduStr);
-  const { ratio: skillRatio, matched, missing } = skillsOverlap(job.requiredSkills || [], profile.skills);
-
-  const expFit = Math.min(1, job.minYearsExperience ? years / job.minYearsExperience : 1);
-  const overall = 0.4 * skillRatio + 0.3 * expFit + 0.2 * eduFit + 0.1 * 0.7;
-
-  const strengths = [
-    ...(matched.length ? [`Good alignment on required skills: ${matched.slice(0,8).join(", ")}`] : []),
-    ...(years ? [`Relevant experience: ~${years.toFixed(1)} years`] : []),
-    ...(eduStr ? [`Education: ${eduStr}`] : []),
-  ];
-
-  const weaknesses = [
-    ...(missing.length ? [`Missing/weak skills: ${missing.slice(0,8).join(", ")}`] : []),
-    ...(job.minYearsExperience && years < job.minYearsExperience
-      ? [`Experience below required ${job.minYearsExperience}y (has ~${years.toFixed(1)}y)`] : []),
-  ];
-
-  const gaps = [...missing.map(m => `Skill gap: ${m}`)];
-  const mentoring = missing.slice(0,3).map(m => `Mentorship in ${m}`);
-
+function buildProfile(rawText: string, fallbackName: string): CandidateProfile {
+  const header = (rawText.split(/\r?\n/).map(s => s.trim()).find(Boolean) || "").slice(0, 80);
   return {
-    months,
-    years,
-    eduStr,
-    score: Math.round(overall * 100),
-    strengths,
-    weaknesses,
-    gaps,
-    mentoring,
-    skillPct: Math.round(skillRatio * 100),
+    name: header || fallbackName.replace(/\.(pdf|docx|doc|txt)$/i, ""),
+    text: rawText,
+    yearsExperience: estimateYearsFromText(rawText),
+    education: extractEducation(rawText),
   };
 }
 
-function safeParse<T = any>(raw: string): T | null {
-  try { return JSON.parse(raw) as T; } catch {}
-  const fenced = raw.replace(/```json|```/g, "").trim();
-  try { return JSON.parse(fenced) as T; } catch {}
-  const m = raw.match(/\{[\s\S]*\}$/);
-  if (m) { try { return JSON.parse(m[0]) as T; } catch {} }
-  return null;
+function scoreAgainstSpec(spec: JobSpec, p: CandidateProfile) {
+  const text = p.text || "";
+  const canonicalGroups = (spec.skills || []).map(g => ({
+    canon: String(g.canonical || "").toLowerCase(),
+    aliases: (g.aliases || []).map((a: string) => String(a).toLowerCase()),
+  }));
+
+  const must = canonicalGroups.filter(g => spec.mustHaveSet?.has(g.canon));
+  const nice = canonicalGroups.filter(g => spec.niceToHaveSet?.has(g.canon));
+
+  const covered = (group: { canon: string; aliases: string[] }) => {
+    if (!group.canon) return false;
+    if (fuzzyHas(text, group.canon)) return true;
+    return group.aliases.some(a => fuzzyHas(text, a));
+  };
+
+  const mustMatches = must.filter(covered);
+  const niceMatches = nice.filter(covered);
+
+  const mustCoverage = must.length ? mustMatches.length / must.length : 1;
+  const niceCoverage = nice.length ? niceMatches.length / nice.length : 1;
+
+  let expScore = 1;
+  if (spec.minYears) {
+    const have = p.yearsExperience ?? 0;
+    expScore = Math.max(0, Math.min(1, have / spec.minYears));
+  }
+
+  const overall = 0.6 * mustCoverage + 0.2 * niceCoverage + 0.2 * expScore;
+
+  const missing = must.filter(m => !mustMatches.includes(m)).map(m => m.canon);
+
+  return {
+    matchScore: Math.round(overall * 100),
+    matchedSkills: Array.from(new Set([...mustMatches, ...niceMatches].map(m => m.canon))),
+    missingSkills: missing,
+    strengths: [
+      ...(mustMatches.length ? [`Strong alignment on key requirements: ${mustMatches.map(m => m.canon).slice(0,8).join(", ")}`] : []),
+      ...(typeof p.yearsExperience === "number" ? [`Relevant experience: ~${p.yearsExperience.toFixed(1)} years`] : []),
+      ...(p.education ? [`Education: ${p.education}`] : []),
+    ],
+    weaknesses: [
+      ...(missing.length ? [`Missing/weak vs must-haves: ${missing.slice(0,8).join(", ")}`] : []),
+      ...(spec.minYears && (p.yearsExperience ?? 0) < spec.minYears
+        ? [`Experience below required ${spec.minYears}y (has ~${(p.yearsExperience ?? 0).toFixed(1)}y)`] : []),
+    ],
+    gaps: missing.map(m => `Skill gap: ${m}`),
+    mentoringNeeds: missing.slice(0,3).map(m => `Mentorship in ${m}`),
+  };
 }
 
-/* ---------- types to avoid never[] inference ---------- */
-type QuestionSets = { technical: string[]; educational: string[]; situational: string[] };
-
-// fallback local questions
-function localQuestions(job: any): QuestionSets {
-  const skills: string[] = (job.requiredSkills || []).slice(0,6);
-  const technical = skills.slice(0,4).map(s => `Describe a real project where you used ${s}. What was the hardest bug and how did you solve it?`);
-  while (technical.length < 4) technical.push(`Walk me through a difficult technical decision you made related to ${job.title}.`);
-
-  const educational = [
-    `How has your formal education prepared you for a ${job.title} role?`,
-    `Tell us about an advanced topic you studied and how you've applied it at work.`,
-    `What recent learning (course/book) most improved your ${skills[0] || "core"} skills?`,
-  ];
-
-  const situational = [
-    `You join a team with legacy code and a 2-week deadline. How do you plan, de-risk, and deliver?`,
-    `A stakeholder asks for a feature that conflicts with constraints. How do you align and negotiate trade-offs?`,
-    `A production incident appears linked to a dependency change. How do you investigate and prevent recurrence?`,
-  ];
-
-  return { technical, educational, situational };
-}
-
-/* -------------------------- route -------------------------- */
-
+/* ---------------------------- route ---------------------------- */
 export async function POST(req: NextRequest) {
   try {
     const form = await req.formData();
@@ -156,115 +151,75 @@ export async function POST(req: NextRequest) {
     if (!jrRaw || typeof jrRaw !== "string") {
       return NextResponse.json({ error: "Missing jobRequirements (stringified JSON)." }, { status: 400 });
     }
-    const jobRequirements = JSON.parse(jrRaw);
+    const job: JobRequirements = JSON.parse(jrRaw);
 
     const resumeFiles = form.getAll("resumes") as File[];
     if (!resumeFiles.length) {
       return NextResponse.json({ error: "No resumes uploaded (field name must be 'resumes')." }, { status: 400 });
     }
 
-    const files = await Promise.all(
-      resumeFiles.map(async (f) => ({
-        name: f.name || "resume",
-        mimeType: f.type || "application/octet-stream",
-        bytes: Buffer.from(await f.arrayBuffer()),
-      }))
+    // 1) Build a **generic role-aware spec** from the JD (includes synonyms per skill)
+    const spec: JobSpec = await extractJobSpec(`${job.title}\n\n${job.description}`);
+
+    // 2) Parse + score resumes quickly
+    const limit = createLimiter(10);
+    const candidates: Candidate[] = [];
+
+    await Promise.all(
+      resumeFiles.map(file =>
+        limit(async () => {
+          const text = await extractTextFromFile(file);
+          const profile = buildProfile(text, file.name);
+          const s = scoreAgainstSpec(spec, profile);
+
+          const base: Candidate = {
+            id: crypto.randomUUID(),
+            name: profile.name,
+            email: "",
+            phone: "",
+            location: "",
+            title: "",
+            yearsExperience: Number((profile.yearsExperience ?? 0).toFixed(2)),
+            education: profile.education || "",
+            skills: s.matchedSkills,
+            summary: text.slice(0, 500).replace(/\s+/g, " "),
+            matchScore: s.matchScore,
+            strengths: s.strengths,
+            weaknesses: s.weaknesses,
+            gaps: s.gaps,
+            mentoringNeeds: s.mentoringNeeds,
+            questions: [], // filled below
+          };
+
+          // Generate **candidate-specific questions** (JD spec + this resume)
+          try {
+            base.questions = await generateQuestionsForCandidate(spec, text);
+          } catch {
+            base.questions = [
+              `Walk me through a recent project most relevant to this role.`,
+              `Which accomplishment best matches "${spec.title || job.title}" and why?`,
+              `Describe a difficult stakeholder or customer situation you handled.`,
+            ];
+          }
+
+          candidates.push(base);
+        })
+      )
     );
 
-    const { extractProfileFromFile, analyzeProfileWithLLM, generateQuestions } = await import("@/utils/geminiClient.server");
-
-    const limit = createLimiter(6);
-
-    // 1) Extract a profile for every file (never drop)
-    const profiles = await Promise.all(files.map(file =>
-      limit(async () => {
-        try {
-          const prof = await extractProfileFromFile(file);
-          if (!prof?.name) prof.name = file.name.replace(/\.(pdf|docx|png|jpg|jpeg)$/i, "") || "Unknown";
-          return { file, profile: prof };
-        } catch {
-          return {
-            file,
-            profile: {
-              name: file.name.replace(/\.(pdf|docx|png|jpg|jpeg)$/i, "") || "Unknown",
-              skills: [], education: [], experience: [], title: "", email: "", phone: "", location: "", summary: "",
-            } as ResumeProfile,
-          };
-        }
-      })
-    ));
-
-    // 2) Analyze each profile with LLM; enrich/repair locally as needed
-    const candidates: Candidate[] = [];
-    const errors: { file: string; message: string }[] = [];
-
-    for (const { file, profile } of profiles) {
-      let candidateFromLLM: any = null;
-      try {
-        const a = await analyzeProfileWithLLM(jobRequirements, profile);
-        const parsed = safeParse(a) || a;
-        candidateFromLLM = parsed?.candidates?.[0] || null;
-      } catch (e: any) {
-        errors.push({ file: file.name, message: "LLM analysis failed; using local scoring." });
-      }
-
-      // Local analysis (for experience & score) — used both as fallback and to correct missing fields
-      const la = localAnalysis(jobRequirements, profile);
-
-      const cand: Candidate = {
-        id: (candidateFromLLM?.id) || crypto.randomUUID(),
-        name: candidateFromLLM?.name || profile.name || file.name,
-        email: candidateFromLLM?.email || profile.email || "",
-        phone: candidateFromLLM?.phone || profile.phone || "",
-        location: candidateFromLLM?.location || profile.location || "",
-        title: candidateFromLLM?.title || profile.title || "",
-        yearsExperience: Number(
-          (candidateFromLLM?.yearsExperience ?? la.years).toFixed(2)
-        ),
-        education: candidateFromLLM?.education || simpleEducationString(profile.education),
-        skills: (candidateFromLLM?.skills && candidateFromLLM.skills.length ? candidateFromLLM.skills : (profile.skills || [])),
-        summary: candidateFromLLM?.summary || profile.summary || "",
-        matchScore: Number(
-          (candidateFromLLM?.matchScore ?? la.score)
-        ),
-        strengths: candidateFromLLM?.strengths?.length ? candidateFromLLM.strengths : la.strengths,
-        weaknesses: candidateFromLLM?.weaknesses?.length ? candidateFromLLM.weaknesses : la.weaknesses,
-        gaps: candidateFromLLM?.gaps?.length ? candidateFromLLM.gaps : la.gaps,
-        mentoringNeeds: candidateFromLLM?.mentoringNeeds?.length ? candidateFromLLM.mentoringNeeds : la.mentoring,
-      };
-
-      // Ensure arrays
-      cand.skills ||= []; cand.strengths ||= []; cand.weaknesses ||= []; cand.gaps ||= []; cand.mentoringNeeds ||= [];
-
-      candidates.push(cand);
-    }
-
-    // 3) Sort DESC by score (top first)
+    // 3) Sort
     candidates.sort((a, b) => (b.matchScore || 0) - (a.matchScore || 0));
 
-    // 4) Questions — LLM first, fallback to local templates
-    let questions: QuestionSets = { technical: [], educational: [], situational: [] };
-    try {
-      const top = candidates.slice(0, Math.min(3, candidates.length));
-      const qRaw = await generateQuestions(jobRequirements, top);
-      const qParsed = safeParse(qRaw);
-      if (qParsed?.technical?.length || qParsed?.educational?.length || qParsed?.situational?.length) {
-        questions = {
-          technical: qParsed.technical || [],
-          educational: qParsed.educational || [],
-          situational: qParsed.situational || [],
-        };
-      } else {
-        questions = localQuestions(jobRequirements);
-        errors.push({ file: "questions", message: "LLM questions empty → using local templates." });
-      }
-    } catch {
-      questions = localQuestions(jobRequirements);
-      errors.push({ file: "questions", message: "LLM questions failed → using local templates." });
-    }
-
-    return NextResponse.json({ candidates, questions, errors });
+    // 4) Return — keep questions object for type compatibility; not used by UI
+    const payload: AnalysisResult = {
+      candidates,
+      questions: { technical: [], educational: [], situational: [] },
+    };
+    return NextResponse.json(payload);
   } catch (err: any) {
-    return NextResponse.json({ error: "Resume analysis failed", details: String(err?.message || err) }, { status: 500 });
+    return NextResponse.json(
+      { error: "Resume analysis failed", details: String(err?.message || err) },
+      { status: 500 }
+    );
   }
 }
