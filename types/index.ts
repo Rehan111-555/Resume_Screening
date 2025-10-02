@@ -1,10 +1,19 @@
 export interface JobRequirements {
   title: string;
   description: string;
-  requiredSkills: string[];
+  requiredSkills: string[];     // kept for compatibility (we send []), not shown in UI
   minYearsExperience: number;
   educationLevel: string;
 }
+
+export type JobSpec = {
+  title?: string;
+  minYears?: number;
+  education?: string;
+  skills: { canonical: string; aliases: string[] }[];
+  mustHaveSet: Set<string>;
+  niceToHaveSet: Set<string>;
+};
 
 export interface Candidate {
   id: string;
@@ -22,10 +31,12 @@ export interface Candidate {
   weaknesses: string[];
   gaps: string[];
   mentoringNeeds: string[];
+  questions?: string[];         // NEW: per-candidate questions
 }
 
 export interface AnalysisResult {
   candidates: Candidate[];
+  // kept for backward compatibility (unused in UI now)
   questions: {
     technical: string[];
     educational: string[];
