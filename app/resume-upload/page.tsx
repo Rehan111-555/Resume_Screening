@@ -34,36 +34,19 @@ export default function ResumeUploadPage() {
 
     try {
       dispatch({ type: 'SET_LOADING', payload: true });
-
-      // Build form data
       const formData = new FormData();
       formData.append('jobRequirements', JSON.stringify(jobRequirements));
       for (const f of uploadedFiles) {
-        // Turn the ArrayBuffer back into a File for upload
         formData.append('resumes', new File([f.content], f.name, { type: f.type }));
       }
 
-      const res = await fetch('/api/analyze-resumes', {
-        method: 'POST',
-        body: formData, // DO NOT set Content-Type for FormData
-      });
-
-      // Read text first to gracefully handle HTML or non-JSON errors
+      const res = await fetch('/api/analyze-resumes', { method: 'POST', body: formData });
       const raw = await res.text();
-
-      if (!res.ok) {
-        throw new Error(raw.slice(0, 500));
-      }
-
-      let data: AnalysisResult;
-      try {
-        data = JSON.parse(raw);
-      } catch {
-        throw new Error(`Expected JSON but got: ${raw.slice(0, 200)}`);
-      }
+      if (!res.ok) throw new Error(raw.slice(0, 500));
+      const data: AnalysisResult = JSON.parse(raw);
 
       dispatch({ type: 'SET_ANALYSIS_RESULT', payload: data });
-      setSuccess(`Successfully analyzed ${data.candidates.length} candidates using AI!`);
+      setSuccess(`Analyzed ${data.candidates.length} candidates.`);
       router.push('/results');
     } catch (e: any) {
       setError(e?.message || 'Failed to analyze resumes.');
@@ -80,9 +63,11 @@ export default function ResumeUploadPage() {
         labels={['Job Requirements', 'Upload Resumes', 'Results']}
       />
 
-      <h1 className="text-2xl font-bold text-gray-900 mb-2">Upload Resumes</h1>
+      <h1 className="text-3xl font-extrabold bg-clip-text text-transparent bg-gradient-to-r from-indigo-600 to-fuchsia-600 mb-2">
+        Upload Resumes
+      </h1>
       <p className="text-gray-600 mb-6">
-        Upload PDF or DOCX resumes (up to 100). We’ll analyze them against your job requirements.
+        Upload up to 100 resumes (PDF, DOCX, DOC). We’ll evaluate them strictly against your job description — for any role.
       </p>
 
       <UploadBox uploadedFiles={uploadedFiles} onFilesUpload={setFiles} />
@@ -91,7 +76,7 @@ export default function ResumeUploadPage() {
         <button
           onClick={handleAnalyze}
           disabled={loading || !uploadedFiles.length || !jobRequirements}
-          className="px-5 py-2.5 rounded-lg bg-blue-600 text-white disabled:opacity-50 hover:bg-blue-700 transition-colors"
+          className="px-5 py-2.5 rounded-lg bg-indigo-600 text-white disabled:opacity-50 hover:bg-indigo-700 transition-colors shadow"
         >
           {loading ? 'Analyzing…' : 'Analyze with AI'}
         </button>
