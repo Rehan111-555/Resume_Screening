@@ -26,16 +26,16 @@ async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
 }
 async function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
   let last: any;
-  for (let i=0;i<=MAX_RETRIES;i++){
+  for (let i = 0; i <= MAX_RETRIES; i++) {
     try { return await withTimeout(fn(), TIMEOUT_MS); }
-    catch(e:any){
-      last=e; const msg=String(e?.message||e);
-      const retriable=/fetch failed|timed out|ETIMEDOUT|429|quota|deadline/i.test(msg);
-      if(!retriable||i===MAX_RETRIES) break;
-      await sleep(600*Math.pow(2,i));
+    catch (e: any) {
+      last = e; const msg = String(e?.message || e);
+      const retriable = /fetch failed|timed out|ETIMEDOUT|429|quota|deadline/i.test(msg);
+      if (!retriable || i === MAX_RETRIES) break;
+      await sleep(600 * Math.pow(2, i));
     }
   }
-  throw new Error(`${label}: ${String(last?.message||last)}`);
+  throw new Error(`${label}: ${String(last?.message || last)}`);
 }
 async function pickModel(): Promise<ModelId> {
   if (cachedModelId) return cachedModelId;
@@ -131,27 +131,39 @@ JOB DESCRIPTION:
 
   const model = await modelForJSON(schema, 0);
   const res = await withRetry(() => model.generateContent(prompt), "extract-jobspec");
-  const data = JSON.parse(res.response.text());
+  const data = JSON.parse(res.response.text()) as {
+    title?: string;
+    minYears?: number | null;
+    education?: string | null;
+    mustHaves?: string[];
+    niceToHaves?: string[];
+    skills?: { canonical?: string; aliases?: string[] }[];
+  };
 
   const canon = (x: string) => String(x || "").toLowerCase();
 
-  const skills = (Array.isArray(data.skills) ? data.skills : [])
-    .map((s: any) => ({ canonical: canon(s.canonical), aliases: (s.aliases || []).map((a: string) => canon(a)) }))
-    .filter((s: any) => s.canonical);
+  const skillsArr: { canonical: string; aliases: string[] }[] = Array.isArray(data.skills)
+    ? (data.skills as { canonical?: string; aliases?: string[] }[])
+        .map((s: { canonical?: string; aliases?: string[] }) => ({
+          canonical: canon(s.canonical || ""),
+          aliases: (s.aliases || []).map((a: string) => canon(a)),
+        }))
+        .filter((s: { canonical: string; aliases: string[] }) => s.canonical.length > 0)
+    : [];
 
-  const mustSet = new Set((data.mustHaves || []).map(canon));
-  const niceSet = new Set((data.niceToHaves || []).map(canon));
-  const uniqueCanon = new Set(skills.map(s => s.canonical));
+  const mustSet = new Set<string>((data.mustHaves || []).map((m: string) => canon(m)));
+  const niceSet = new Set<string>((data.niceToHaves || []).map((n: string) => canon(n)));
+  const uniqueCanon = new Set<string>(skillsArr.map((s: { canonical: string; aliases: string[] }) => s.canonical));
 
   // Ensure all must/nice tokens exist in skills[]
-  for (const m of mustSet) if (!uniqueCanon.has(m)) skills.push({ canonical: m, aliases: [] });
-  for (const n of niceSet) if (!uniqueCanon.has(n)) skills.push({ canonical: n, aliases: [] });
+  for (const m of mustSet) if (!uniqueCanon.has(m)) skillsArr.push({ canonical: m, aliases: [] });
+  for (const n of niceSet) if (!uniqueCanon.has(n)) skillsArr.push({ canonical: n, aliases: [] });
 
   return {
     title: data.title || "",
     minYears: typeof data.minYears === "number" ? data.minYears : undefined,
     education: data.education || undefined,
-    skills,
+    skills: skillsArr,
     mustHaveSet: mustSet,
     niceToHaveSet: niceSet,
   } as JobSpec;
@@ -183,6 +195,6 @@ Return JSON: { "questions": ["...", "..."] }
 
   const model = await modelForJSON(schema, 0.4);
   const res = await withRetry(() => model.generateContent(prompt), "candidate-questions");
-  const data = JSON.parse(res.response.text());
+  const data = JSON.parse(res.response.text()) as { questions?: string[] };
   return Array.isArray(data.questions) ? data.questions.slice(0, 6) : [];
 }
