@@ -24,7 +24,7 @@ export default function ResumeUploadPage() {
     setSuccess(null);
 
     if (!jobRequirements) {
-      setError('Please complete Job Requirements first.');
+      setError('Please complete Job Description first.');
       return;
     }
     if (!uploadedFiles.length) {
@@ -34,6 +34,7 @@ export default function ResumeUploadPage() {
 
     try {
       dispatch({ type: 'SET_LOADING', payload: true });
+
       const formData = new FormData();
       formData.append('jobRequirements', JSON.stringify(jobRequirements));
       for (const f of uploadedFiles) {
@@ -43,10 +44,10 @@ export default function ResumeUploadPage() {
       const res = await fetch('/api/analyze-resumes', { method: 'POST', body: formData });
       const raw = await res.text();
       if (!res.ok) throw new Error(raw.slice(0, 500));
-      const data: AnalysisResult = JSON.parse(raw);
 
+      const data: AnalysisResult = JSON.parse(raw);
       dispatch({ type: 'SET_ANALYSIS_RESULT', payload: data });
-      setSuccess(`Analyzed ${data.candidates.length} candidates.`);
+      setSuccess(`Analyzed ${data.candidates.length} candidates with AI 🤖`);
       router.push('/results');
     } catch (e: any) {
       setError(e?.message || 'Failed to analyze resumes.');
@@ -57,17 +58,13 @@ export default function ResumeUploadPage() {
 
   return (
     <main className="max-w-4xl mx-auto px-4 py-8">
-      <ProgressBar
-        currentStep={1}
-        totalSteps={3}
-        labels={['Job Requirements', 'Upload Resumes', 'Results']}
-      />
+      <ProgressBar currentStep={1} totalSteps={3} labels={['Job Description', 'Upload Resumes', 'Results']} />
 
-      <h1 className="text-3xl font-extrabold bg-clip-text text-transparent bg-gradient-to-r from-indigo-600 to-fuchsia-600 mb-2">
+      <h1 className="text-3xl font-extrabold bg-gradient-to-r from-fuchsia-600 via-blue-600 to-emerald-500 bg-clip-text text-transparent mb-2">
         Upload Resumes
       </h1>
       <p className="text-gray-600 mb-6">
-        Upload up to 100 resumes (PDF, DOCX, DOC). We’ll evaluate them strictly against your job description — for any role.
+        Upload PDF, DOCX, DOC, or TXT (up to 100). The AI will read the Job Description and evaluate every resume—no manual skill lists.
       </p>
 
       <UploadBox uploadedFiles={uploadedFiles} onFilesUpload={setFiles} />
@@ -76,14 +73,14 @@ export default function ResumeUploadPage() {
         <button
           onClick={handleAnalyze}
           disabled={loading || !uploadedFiles.length || !jobRequirements}
-          className="px-5 py-2.5 rounded-lg bg-indigo-600 text-white disabled:opacity-50 hover:bg-indigo-700 transition-colors shadow"
+          className="px-5 py-2.5 rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 text-white disabled:opacity-50 hover:opacity-90 transition"
         >
           {loading ? 'Analyzing…' : 'Analyze with AI'}
         </button>
 
         <button
           onClick={() => router.push('/job-requirements')}
-          className="px-5 py-2.5 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 transition-colors"
+          className="px-5 py-2.5 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 transition"
         >
           Back
         </button>
