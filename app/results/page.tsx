@@ -1,61 +1,51 @@
-'use client';
+// app/results/page.tsx
+"use client";
 
-import { useState, useMemo } from 'react';
-import { useApp } from '@/contexts/AppContext';
-import CandidateCard from '@/components/CandidateCard';
-import CandidateDetail from '@/components/CandidateDetail';
-import { Candidate } from '@/types';
-import { Download, Filter, ArrowLeft } from 'lucide-react';
-import { exportToCSV } from '@/utils/exportCSV';
+import { useState, useMemo } from "react";
+import { useApp } from "@/contexts/AppContext";
+import CandidateCard from "@/components/CandidateCard";
+import CandidateDetail from "@/components/CandidateDetail";
+import { Candidate } from "@/types";
+import { Download, Filter, ArrowLeft, Star } from "lucide-react";
+import { exportToCSV } from "@/utils/exportCSV";
 
-type SortField = 'matchScore' | 'yearsExperience' | 'education';
-type SortOrder = 'asc' | 'desc';
+type SortField = "matchScore" | "yearsExperience" | "education";
+type SortOrder = "asc" | "desc";
 
 export default function ResultsPage() {
   const { state, dispatch } = useApp();
   const [selectedCandidate, setSelectedCandidate] = useState<Candidate | null>(null);
   const [isDetailOpen, setIsDetailOpen] = useState(false);
-  const [sortField, setSortField] = useState<SortField>('matchScore');
-  const [sortOrder, setSortOrder] = useState<SortOrder>('desc');
-  const [filterEducation, setFilterEducation] = useState('');
+  const [sortField, setSortField] = useState<SortField>("matchScore");
+  const [sortOrder, setSortOrder] = useState<SortOrder>("desc");
+  const [filterEducation, setFilterEducation] = useState("");
 
   const sortedCandidates = useMemo(() => {
     if (!state.analysisResult?.candidates) return [];
     let filtered = [...state.analysisResult.candidates];
-
     if (filterEducation) {
-      filtered = filtered.filter(candidate =>
-        (candidate.education || '').toLowerCase().includes(filterEducation.toLowerCase())
-      );
+      filtered = filtered.filter((c) => c.education.toLowerCase().includes(filterEducation.toLowerCase()));
     }
-
     filtered.sort((a, b) => {
       let aValue: any = a[sortField];
       let bValue: any = b[sortField];
-
-      if (sortField === 'education') {
-        const order = ['High School', 'Intermediate', 'Bachelor', 'Master', 'PhD'];
-        const idxA = order.findIndex(x => (a.education || '').includes(x));
-        const idxB = order.findIndex(x => (b.education || '').includes(x));
-        aValue = idxA === -1 ? 0 : idxA;
-        bValue = idxB === -1 ? 0 : idxB;
+      if (sortField === "education") {
+        const order = ["High School", "Intermediate", "Bachelor", "Bachelor's", "Master", "Master's", "PhD"];
+        aValue = order.findIndex((x) => cIncludes(a.education, x));
+        bValue = order.findIndex((x) => cIncludes(b.education, x));
       }
-
-      return sortOrder === 'desc' ? bValue - aValue : aValue - bValue;
+      return sortOrder === "desc" ? bValue - aValue : aValue - bValue;
     });
-
     return filtered;
   }, [state.analysisResult?.candidates, sortField, sortOrder, filterEducation]);
 
-  const handleCandidateClick = (candidate: Candidate) => {
-    setSelectedCandidate(candidate);
+  const handleCandidateClick = (c: Candidate) => {
+    setSelectedCandidate(c);
     setIsDetailOpen(true);
   };
 
   const handleExport = () => {
-    if (state.analysisResult?.candidates) {
-      exportToCSV(state.analysisResult.candidates);
-    }
+    if (state.analysisResult?.candidates) exportToCSV(state.analysisResult.candidates);
   };
 
   if (!state.analysisResult) {
@@ -73,35 +63,53 @@ export default function ResultsPage() {
     <div className="min-h-screen bg-gray-50">
       <div className="container mx-auto px-4 py-8">
         <div className="max-w-7xl mx-auto">
-          {/* Header */}
           <div className="flex justify-between items-center mb-8">
             <div>
               <button
-                onClick={() => dispatch({ type: 'RESET' })}
+                onClick={() => dispatch({ type: "RESET" })}
                 className="flex items-center text-gray-600 hover:text-gray-800 mb-2"
               >
                 <ArrowLeft className="h-4 w-4 mr-2" />
                 Start Over
               </button>
-              <h1 className="text-4xl font-bold bg-gradient-to-r from-indigo-600 to-fuchsia-600 bg-clip-text text-transparent">
+              <h1 className="text-4xl font-extrabold bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 bg-clip-text text-transparent">
                 Candidate Rankings
               </h1>
-              <p className="text-gray-600 mt-2">
-                {sortedCandidates.length} candidates analyzed by AI
-              </p>
+              <p className="text-gray-600 mt-2">{sortedCandidates.length} candidates analyzed by AI</p>
             </div>
 
             <button
               onClick={handleExport}
-              className="flex items-center px-6 py-3 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors"
+              className="flex items-center px-6 py-3 bg-gradient-to-r from-green-600 to-emerald-600 text-white rounded-xl shadow hover:opacity-95"
             >
               <Download className="h-4 w-4 mr-2" />
               Export CSV
             </button>
           </div>
 
-          {/* Controls */}
-          <div className="bg-white rounded-xl shadow p-6 mb-6">
+          {state.analysisResult.questions && (
+            <div className="bg-white rounded-2xl shadow p-6 mb-8 border border-indigo-50">
+              <h2 className="text-2xl font-bold flex items-center mb-4">
+                <Star className="h-6 w-6 mr-2 text-yellow-500" /> AI-Generated Interview Questions
+              </h2>
+              <div className="grid md:grid-cols-3 gap-6">
+                {(["technical", "educational", "situational"] as const).map((k) => (
+                  <div key={k}>
+                    <h3 className="font-semibold text-sm uppercase tracking-wide text-gray-500 mb-2">{k}</h3>
+                    <ul className="space-y-2">
+                      {state.analysisResult!.questions![k].map((q, i) => (
+                        <li key={i} className="text-gray-700 text-sm p-2 bg-gradient-to-r from-gray-50 to-white border rounded">
+                          {q}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="bg-white rounded-2xl shadow p-6 mb-6 border border-indigo-50">
             <div className="flex flex-wrap gap-4 items-center">
               <div className="flex items-center">
                 <Filter className="h-4 w-4 mr-2 text-gray-500" />
@@ -131,14 +139,13 @@ export default function ResultsPage() {
                   type="text"
                   value={filterEducation}
                   onChange={(e) => setFilterEducation(e.target.value)}
-                  placeholder="e.g., Master, Bachelor..."
+                  placeholder="e.g., Bachelor, Master..."
                   className="border border-gray-300 rounded px-3 py-1 text-sm"
                 />
               </div>
             </div>
           </div>
 
-          {/* Candidate Grid */}
           <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
             {sortedCandidates.map((candidate) => (
               <CandidateCard
@@ -151,19 +158,16 @@ export default function ResultsPage() {
           </div>
 
           {sortedCandidates.length === 0 && (
-            <div className="text-center py-12">
-              <p className="text-gray-500 text-lg">No candidates match your filters.</p>
-            </div>
+            <div className="text-center py-12 text-gray-500">No candidates match your filters.</div>
           )}
         </div>
       </div>
 
-      {/* Candidate Detail Panel */}
-      <CandidateDetail
-        candidate={selectedCandidate}
-        isOpen={isDetailOpen}
-        onClose={() => setIsDetailOpen(false)}
-      />
+      <CandidateDetail candidate={selectedCandidate} isOpen={isDetailOpen} onClose={() => setIsDetailOpen(false)} />
     </div>
   );
+}
+
+function cIncludes(s: string, token: string) {
+  return (s || "").toLowerCase().includes((token || "").toLowerCase());
 }
