@@ -1,8 +1,9 @@
+// types/index.ts
 export interface JobRequirements {
   title: string;
   description: string;
-  minYearsExperience?: number;
-  educationLevel?: string;
+  minYearsExperience: number;
+  educationLevel: string; // e.g., "Bachelor's", "Master's", etc.
 }
 
 export interface Candidate {
@@ -12,23 +13,27 @@ export interface Candidate {
   phone: string;
   location: string;
   title: string;
-  yearsExperience: number;
+  yearsExperience: number; // decimal years
   education: string;
   skills: string[];
   summary: string;
-  matchScore: number;
-  skillsEvidencePct: number;   // NEW: deterministic skills/evidence percentage
+  matchScore: number; // 0..100
   strengths: string[];
   weaknesses: string[];
   gaps: string[];
   mentoringNeeds: string[];
-  questions: string[];         // NEW: per-candidate tailored questions
+  questions?: string[]; // per-candidate tailored interview questions
 }
 
 export interface AnalysisResult {
   candidates: Candidate[];
+  // Optional global questions (we still show them if available)
+  questions?: {
+    technical: string[];
+    educational: string[];
+    situational: string[];
+  };
   errors?: { file: string; message: string }[];
-  meta?: any;
 }
 
 export interface UploadedFile {
