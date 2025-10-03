@@ -1,196 +1,48 @@
 // utils/geminiClient.server.ts
 import { GoogleGenerativeAI, HarmBlockThreshold, HarmCategory } from "@google/generative-ai";
-import type { Candidate, JobRequirements } from "@/types";
 
-const key = process.env.GOOGLE_AI_API_KEY;
-if (!key) throw new Error("Missing GOOGLE_AI_API_KEY in .env.local");
+/**
+ * IMPORTANT:
+ *  - Keep payloads simple and valid: we do NOT pass responseSchema anymore (it’s what caused your 400s).
+ *  - We still ask for JSON in the prompt and self-heal if the model returns loose text.
+ *  - We always MERGE model output with local evidence, never overwrite local evidence with zeros.
+ */
 
-const genAI = new GoogleGenerativeAI(key);
+const KEY = process.env.GOOGLE_AI_API_KEY;
+if (!KEY) throw new Error("Missing GOOGLE_AI_API_KEY in .env.local");
 
-// Model selection
-const CANDIDATE_MODELS = ["gemini-2.5-flash", "gemini-2.5-pro"] as const;
-type ModelId = (typeof CANDIDATE_MODELS)[number];
-let cachedModelId: ModelId | null = null;
+const genAI = new GoogleGenerativeAI(KEY);
+const MODELS: ReadonlyArray<string> = ["gemini-2.5-flash", "gemini-2.5-pro"];
 
-const TIMEOUT_MS = 55_000;
-const MAX_RETRIES = 2;
+const safetySettings = [
+  { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+  { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+  { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+  { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+];
 
-function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
-async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
-  let t: any;
-  const guard = new Promise<never>((_, rej) => { t = setTimeout(() => rej(new Error("Request timed out")), ms); });
-  try { return (await Promise.race([p, guard])) as T; }
-  finally { clearTimeout(t); }
-}
-async function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
-  let last: any;
-  for (let i = 0; i <= MAX_RETRIES; i++) {
-    try { return await withTimeout(fn(), TIMEOUT_MS); }
-    catch (e: any) {
-      last = e;
-      const msg = String(e?.message || e);
-      const retriable = /fetch failed|timed out|ETIMEDOUT|429|quota|deadline/i.test(msg);
-      if (!retriable || i === MAX_RETRIES) break;
-      await sleep(600 * Math.pow(2, i));
-    }
-  }
-  throw new Error(`${label}: ${String(last?.message || last)}`);
-}
-async function pickModel(): Promise<ModelId> {
-  if (cachedModelId) return cachedModelId;
-  for (const id of CANDIDATE_MODELS) {
+let cachedModel: string | null = null;
+
+async function pickModel(): Promise<string> {
+  if (cachedModel) return cachedModel;
+  for (const id of MODELS) {
     try {
-      const probe = genAI.getGenerativeModel({
+      await genAI.getGenerativeModel({
         model: id,
-        generationConfig: { temperature: 0.1, maxOutputTokens: 8, responseMimeType: "text/plain" },
-      });
-      // simple probe
-      await withRetry(() => probe.generateContent({ contents: [{ role: "user", parts: [{ text: "ping" }] }] }), `probe ${id}`);
-      cachedModelId = id;
+        generationConfig: { temperature: 0.1, maxOutputTokens: 8 },
+      }).generateContent({ contents: [{ role: "user", parts: [{ text: "ping" }] }] });
+      cachedModel = id;
       return id;
-    } catch {
-      // try next
-    }
+    } catch {}
   }
-  throw new Error(`No compatible Gemini model (enable gemini-2.5-flash or gemini-2.5-pro).`);
+  throw new Error("No Gemini 2.5 model available (enable gemini-2.5-flash or gemini-2.5-pro).");
 }
 
-/** ---------- JSON helpers ---------- */
-export function safeParse<T = any>(raw: string): T | null {
-  try { return JSON.parse(raw) as T; } catch {}
-  const fenced = raw.replace(/```json|```/g, "").trim();
-  try { return JSON.parse(fenced) as T; } catch {}
-  const m = raw.match(/\{[\s\S]*\}$/);
-  if (m) { try { return JSON.parse(m[0]) as T; } catch {} }
-  return null;
+function toInlinePart(bytes: Buffer, mimeType: string) {
+  return { inlineData: { data: bytes.toString("base64"), mimeType } };
 }
 
-async function repairToJson<T = any>(raw: string): Promise<T> {
-  const modelId = await pickModel();
-  const model = genAI.getGenerativeModel({
-    model: modelId,
-    systemInstruction: `You are a repair tool. Output ONLY valid JSON. No commentary.`,
-    generationConfig: { temperature: 0, maxOutputTokens: 512, responseMimeType: "application/json" },
-    safetySettings: [
-      { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
-      { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-      { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
-      { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
-    ],
-  });
-  const res = await withRetry(
-    () =>
-      model.generateContent({
-        contents: [{ role: "user", parts: [{ text: `Fix to strict JSON:\n${raw}` }] }],
-      }),
-    "json-repair"
-  );
-  const text = res.response.text();
-  const parsed = safeParse<T>(text);
-  if (parsed) return parsed;
-  try { return JSON.parse(text) as T; } catch {}
-  throw new Error("JSON repair failed");
-}
-
-/** ---------- Prompts ---------- */
-const SYSTEM_JSON = `
-Return ONLY strict JSON (UTF-8). No explanations, no markdown. 
-If something is unknown, return empty strings or [].
-`;
-
-function profilePrompt(fileName: string) {
-  return `
-Extract a RESUME PROFILE from the attached CV. Return JSON:
-
-{
-  "name": "",
-  "email": "",
-  "phone": "",
-  "location": "",
-  "title": "",
-  "skills": [],
-  "summary": "",
-  "education": [{"degree":"","field":"","institution":"","start":"","end":""}],
-  "experience": [{"title":"","company":"","start":"","end":"","summary":""}]
-}
-
-File: ${fileName}
-Dates may be "Apr 2021", "2018-09", "09/2018", etc.
-`;
-}
-
-function jobSignalsPrompt(job: JobRequirements) {
-  return `
-From the JOB DESCRIPTION, extract hiring signals as **role-agnostic** keywords with synonyms (things likely to appear on resumes). 
-Return JSON:
-
-{
-  "mustHaves": [{"name":"","synonyms":[]}],
-  "niceToHaves": [{"name":"","synonyms":[]}],
-  "educationHints": ["", ""]
-}
-
-Guidelines:
-- Derive **only** from the JD below (no prior lists).
-- Use skill/topics, tools, domains, responsibilities, certifications, seniority cues.
-- Keep 5–12 mustHaves and 3–8 niceToHaves max.
-- Synonyms should include common phrasing variants and abbreviations.
-
-JOB TITLE: ${job.title}
-MIN YEARS: ${job.minYearsExperience}
-EDUCATION LEVEL: ${job.educationLevel}
-
-JD:
-"""${job.description.slice(0, 8000)}"""
-`;
-}
-
-function analysisPrompt(job: JobRequirements, jobSignals: JobSignals, profile: ResumeProfile) {
-  return `
-You will evaluate a single resume profile **strictly vs the Job Description signals**.
-
-JOB:
-${JSON.stringify(job)}
-
-JOB_SIGNALS:
-${JSON.stringify(jobSignals)}
-
-RESUME_PROFILE:
-${JSON.stringify(profile).slice(0, 8000)}
-
-Return JSON:
-
-{
-  "candidate": {
-    "id": "uuid-or-any-id",
-    "name": "",
-    "email": "",
-    "phone": "",
-    "location": "",
-    "title": "",
-    "yearsExperience": 0,
-    "education": "",
-    "skills": [],
-    "summary": "",
-    "matchScore": 0,
-    "strengths": [],
-    "weaknesses": [],
-    "gaps": [],
-    "mentoringNeeds": [],
-    "questions": []
-  }
-}
-
-Scoring rules:
-- Base on mustHaves/niceToHaves evidence **found in profile** (skills + experience text).
-- Consider yearsExperience vs MIN YEARS.
-- Education fit vs EDUCATION LEVEL (approximate).
-- Be realistic and **do not hallucinate**. If a required item is missing, mark it as gap.
-- Generate **6 tailored interview questions** for this candidate matching JD focus.
-`;
-}
-
-/** ---------- Types used internally ---------- */
+/* --------------------- Types --------------------- */
 export type ResumeProfile = {
   name: string;
   email?: string;
@@ -203,102 +55,143 @@ export type ResumeProfile = {
   experience?: { title?: string; company?: string; start?: string; end?: string; summary?: string }[];
 };
 
-export type JobSignals = {
-  mustHaves: { name: string; synonyms: string[] }[];
-  niceToHaves: { name: string; synonyms: string[] }[];
-  educationHints: string[];
+export type Candidate = {
+  id: string;
+  name: string;
+  email: string;
+  phone: string;
+  location: string;
+  title: string;
+  yearsExperience: number;
+  education: string;
+  skills: string[];
+  summary: string;
+  matchScore: number;
+  strengths: string[];
+  weaknesses: string[];
+  gaps: string[];
+  mentoringNeeds: string[];
+  // new: per-candidate questions
+  interviewQuestions?: string[];
 };
 
-/** ---------- Core helpers ---------- */
-function toInlinePart(bytes: Buffer, mimeType: string) {
-  return { inlineData: { data: bytes.toString("base64"), mimeType } };
+/* --------------------- JSON helpers --------------------- */
+function safeJson<T=any>(raw: string): T | null {
+  try { return JSON.parse(raw) as T; } catch {}
+  const unFenced = raw.replace(/```json|```/g, "").trim();
+  try { return JSON.parse(unFenced) as T; } catch {}
+  const m = raw.match(/\{[\s\S]*\}$/);
+  if (m) { try { return JSON.parse(m[0]) as T; } catch {} }
+  return null;
 }
 
-function ensureArray<T>(v: T | T[] | null | undefined): T[] {
-  if (!v) return [];
-  return Array.isArray(v) ? v : [v];
+/* --------------------- Prompts --------------------- */
+function profilePrompt() {
+  return `
+You will receive a resume file. Extract a structured RESUME PROFILE as JSON only.
+
+Return:
+{
+  "name": "string",
+  "email": "string",
+  "phone": "string",
+  "location": "string",
+  "title": "string",
+  "skills": ["..."],
+  "summary": "string",
+  "education": [{"degree":"","field":"","institution":"","start":"","end":""}],
+  "experience": [{"title":"","company":"","start":"","end":"","summary":""}]
 }
 
-/** ---------- Public API ---------- */
+Notes:
+- If a field is unknown, use "" or [].
+- Do not include any text outside the JSON.`;
+}
+
+function analysisPrompt(job: any, profile: ResumeProfile) {
+  const TODAY = new Date().toISOString().slice(0,10);
+  return `
+TODAY: ${TODAY}
+
+JOB:
+- Title: ${job.title}
+- Description: ${job.description}
+- Minimum years: ${job.minYearsExperience || 0}
+- Education level: ${job.educationLevel || ""}
+
+RESUME PROFILE:
+${JSON.stringify(profile).slice(0, 9000)}
+
+TASK: Produce a JSON object with one candidate analyzing STRICTLY against the JOB DESCRIPTION.
+Think like a senior recruiter: assess true years of experience (infer from dates and text), core skills actually evidenced, education summary, and realistic match score (0..100).
+
+Return JSON ONLY with the shape:
+{
+  "candidates":[
+    {
+      "id":"string",
+      "name":"string",
+      "email":"string",
+      "phone":"string",
+      "location":"string",
+      "title":"string",
+      "yearsExperience": number,
+      "education": "string",
+      "skills": ["..."],
+      "summary": "string",
+      "matchScore": number,
+      "strengths": ["..."],
+      "weaknesses": ["..."],
+      "gaps": ["..."],
+      "mentoringNeeds": ["..."],
+      "interviewQuestions": ["...","...","...","...","...","..."]
+    }
+  ]
+}
+
+Rules:
+- If you are not confident, still estimate but do not output 0 unless it is truly absent.
+- Interview questions must be tailored to THIS candidate and THIS job.
+`;
+}
+
+/* --------------------- Public API --------------------- */
+
 export async function extractProfileFromFile(file: { bytes: Buffer; mimeType: string; name: string }): Promise<ResumeProfile> {
   const modelId = await pickModel();
   const model = genAI.getGenerativeModel({
     model: modelId,
-    systemInstruction: SYSTEM_JSON,
     generationConfig: { temperature: 0.1, maxOutputTokens: 2048, responseMimeType: "application/json" },
+    safetySettings,
   });
-  const res = await withRetry(
-    () =>
-      model.generateContent({
-        contents: [
-          { role: "user", parts: [{ text: profilePrompt(file.name) }, toInlinePart(file.bytes, file.mimeType)] as any },
-        ],
-      }),
-    `extract-profile (${modelId})`
-  );
+
+  const res = await model.generateContent({
+    contents: [
+      { role: "user", parts: [{ text: `Extract profile from resume file: ${file.name}` }] },
+      { role: "user", parts: [toInlinePart(file.bytes, file.mimeType)] },
+      { role: "user", parts: [{ text: profilePrompt() }] },
+    ],
+  });
+
   const text = res.response.text();
-  const parsed = safeParse<ResumeProfile>(text) || (await repairToJson<ResumeProfile>(text));
-  parsed.name ||= file.name.replace(/\.(pdf|docx|doc|png|jpg|jpeg)$/i, "");
-  parsed.skills = ensureArray(parsed.skills);
-  parsed.education = ensureArray(parsed.education);
-  parsed.experience = ensureArray(parsed.experience);
-  return parsed;
+  return safeJson<ResumeProfile>(text) || {
+    name: file.name.replace(/\.(pdf|docx|png|jpg|jpeg)$/i, "") || "Unknown",
+    email: "", phone: "", location: "", title: "",
+    skills: [], summary: "", education: [], experience: []
+  };
 }
 
-export async function extractJobSignals(job: JobRequirements): Promise<JobSignals> {
+export async function analyzeProfileWithLLM(job: any, profile: ResumeProfile) {
   const modelId = await pickModel();
   const model = genAI.getGenerativeModel({
     model: modelId,
-    systemInstruction: SYSTEM_JSON,
-    generationConfig: { temperature: 0.2, maxOutputTokens: 1024, responseMimeType: "application/json" },
-  });
-  const res = await withRetry(
-    () =>
-      model.generateContent({
-        contents: [{ role: "user", parts: [{ text: jobSignalsPrompt(job) }] }],
-      }),
-    `job-signals (${modelId})`
-  );
-  const text = res.response.text();
-  const parsed = safeParse<JobSignals>(text) || (await repairToJson<JobSignals>(text));
-  parsed.mustHaves = ensureArray(parsed.mustHaves).slice(0, 12);
-  parsed.niceToHaves = ensureArray(parsed.niceToHaves).slice(0, 8);
-  parsed.educationHints = ensureArray(parsed.educationHints).slice(0, 6);
-  return parsed;
-}
-
-export async function analyzeOneCandidate(
-  job: JobRequirements,
-  jobSignals: JobSignals,
-  profile: ResumeProfile
-): Promise<Candidate> {
-  const modelId = await pickModel();
-  const model = genAI.getGenerativeModel({
-    model: modelId,
-    systemInstruction: SYSTEM_JSON,
     generationConfig: { temperature: 0.15, maxOutputTokens: 2048, responseMimeType: "application/json" },
+    safetySettings,
   });
 
-  const res = await withRetry(
-    () =>
-      model.generateContent({
-        contents: [{ role: "user", parts: [{ text: analysisPrompt(job, jobSignals, profile) }] }],
-      }),
-    `analyze-candidate (${modelId})`
-  );
+  const res = await model.generateContent({
+    contents: [{ role: "user", parts: [{ text: analysisPrompt(job, profile) }] }],
+  });
 
-  const text = res.response.text();
-  const parsed = safeParse<{ candidate: Candidate }>(text) || (await repairToJson<{ candidate: Candidate }>(text));
-  const cand = parsed.candidate;
-
-  // Guardrails
-  cand.skills ||= [];
-  cand.strengths ||= [];
-  cand.weaknesses ||= [];
-  cand.gaps ||= [];
-  cand.mentoringNeeds ||= [];
-  cand.questions ||= [];
-
-  cand.matchScore = Math.max(0, Math.min(100, Math.round(Number(cand.matchScore) || 0)));
-  return cand;
+  return res.response.text();
 }
