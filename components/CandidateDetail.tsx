@@ -110,16 +110,20 @@ export default function CandidateDetail({
           </div>
 
           {/* Tailored Questions */}
-          {candidate.questions?.length > 0 && (
-            <div>
-              <h3 className="text-lg font-semibold mb-3 text-indigo-600">AI Interview Questions</h3>
-              <ul className="space-y-2">
-                {candidate.questions.map((q, i) => (
-                  <li key={i} className="p-3 bg-indigo-50 rounded text-indigo-900">{q}</li>
-                ))}
-              </ul>
-            </div>
-          )}
+          {/* AI Interview Questions (per candidate) */}
+{candidate.questions && candidate.questions.length > 0 && (
+  <div>
+    <h3 className="text-lg font-semibold mb-4">AI Interview Questions</h3>
+    <ul className="space-y-2">
+      {candidate.questions.map((q, i) => (
+        <li key={i} className="text-gray-700 p-2 rounded bg-indigo-50">
+          {q}
+        </li>
+      ))}
+    </ul>
+  </div>
+)}
+
 
           {/* Analysis */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -188,3 +192,4 @@ export default function CandidateDetail({
     </div>
   );
 }
+
