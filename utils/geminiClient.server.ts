@@ -4,6 +4,7 @@ import {
   HarmCategory,
 } from "@google/generative-ai";
 
+/** ───────────────────────── Setup ───────────────────────── */
 const key = process.env.GOOGLE_AI_API_KEY;
 if (!key) throw new Error("Missing GOOGLE_AI_API_KEY in .env.local");
 const genAI = new GoogleGenerativeAI(key);
@@ -51,26 +52,21 @@ async function pickModel(): Promise<ModelId> {
   throw new Error("No enabled Gemini model (enable gemini-2.5-flash or gemini-2.5-pro).");
 }
 
-/* -------------------------- safety ------------------------- */
+/** ─────────────────────── Safety / JSON ─────────────────── */
 const safetySettings = [
   { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
   { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
   { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
   { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
 ];
-const SYS = `You MUST return only valid JSON. No markdown. When unsure, use "", 0, false, or [].`;
+const SYS = `You MUST return only valid JSON. No markdown. Use "", 0, false, or [] when unsure.`;
 
-/* -------------------------- helpers ------------------------ */
 async function jsonModel(temperature = 0) {
   const id = await pickModel();
   return genAI.getGenerativeModel({
     model: id,
     systemInstruction: SYS,
-    generationConfig: {
-      temperature,
-      maxOutputTokens: 4096,
-      responseMimeType: "application/json",
-    },
+    generationConfig: { temperature, maxOutputTokens: 4096, responseMimeType: "application/json" },
     safetySettings,
   });
 }
@@ -81,16 +77,12 @@ function j<T = any>(raw: string): T | null {
   return null;
 }
 
-/* ======================= PUBLIC API ======================== */
-
-/**
- * LLM extracts a rich, role-agnostic profile from resume TEXT.
- */
+/** ───────────────────── Resume profile LLM ───────────────── */
 export async function llmExtractProfile(resumeText: string) {
   const prompt = `
 Extract a clean JSON RESUME PROFILE from the following resume text. Be concise but complete.
 
-Return ONLY JSON like:
+Return ONLY JSON:
 {
   "name": "",
   "email": "",
@@ -101,12 +93,8 @@ Return ONLY JSON like:
   "skills": ["..."],
   "tools": ["..."],
   "industryDomains": ["..."],
-  "education": [
-    {"degree":"","field":"","institution":"","start":"","end":""}
-  ],
-  "experience": [
-    {"title":"","company":"","location":"","start":"","end":"","achievements":["..."],"tech":["..."]}
-  ],
+  "education": [{"degree":"","field":"","institution":"","start":"","end":""}],
+  "experience": [{"title":"","company":"","location":"","start":"","end":"","achievements":["..."],"tech":["..."]}],
   "links": {"portfolio":"","github":"","linkedin":"","other":[]},
   "yearsExperience": 0
 }
@@ -119,10 +107,148 @@ RESUME:
   return j<any>(res.response.text()) || {};
 }
 
-/**
- * LLM grades a candidate against the JD with a human rubric.
- * Also generates candidate-specific interview questions.
- */
+/** ───────────────────── Role-agnostic JD → keywords ───────────────────── */
+export type JDKeywords = {
+  must: { name: string; synonyms: string[] }[];
+  nice: { name: string; synonyms: string[] }[];
+};
+
+const STOP_WORDS = new Set([
+  "the","a","an","and","or","of","for","to","in","on","at","by","with","from","as",
+  "is","are","be","this","that","these","those","will","can","should","must",
+  "we","you","our","their","your","it","they","i","he","she","them","us",
+  "role","job","candidate","position","responsibilities","requirements","preferred",
+  "experience","years","team","work","ability","skills","plus","etc","including",
+]);
+function tokenizeJD(jd: string): string[] {
+  return jd
+    .toLowerCase()
+    .replace(/[^a-z0-9\-\+\.#& ]+/g, " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .filter(t => !STOP_WORDS.has(t))
+    .slice(0, 4000);
+}
+function topTermsFromJD(jd: string, count = 16) {
+  const tokens = tokenizeJD(jd);
+  const grams = new Map<string, number>();
+  const add = (k: string) => grams.set(k, (grams.get(k) || 0) + 1);
+  for (let i = 0; i < tokens.length; i++) {
+    add(tokens[i]);
+    if (i + 1 < tokens.length) add(tokens[i] + " " + tokens[i + 1]);
+    if (i + 2 < tokens.length) add(tokens[i] + " " + tokens[i + 2]);
+  }
+  return Array.from(grams.entries())
+    .sort((a, b) => b[1] - a[1])
+    .map(([k]) => k)
+    .filter(k => k.length >= 3)
+    .slice(0, count);
+}
+function localSynonyms(term: string): string[] {
+  const t = term.toLowerCase().trim();
+  const out = new Set<string>([t]);
+  out.add(t.replace(/\s+/g, ""));
+  out.add(t.replace(/\s+/g, "-"));
+  out.add(t.replace(/\s+/g, "."));
+  out.add(t.replace(/[-._]/g, " "));
+  if (t.endsWith("s")) out.add(t.slice(0, -1)); else out.add(t + "s");
+  out.add(t.replace(/javascript/i, "js"));
+  out.add(t.replace(/\bjs\b/i, "javascript"));
+  out.add(t.replace(/user experience/i, "ux"));
+  out.add(t.replace(/user interface/i, "ui"));
+  return Array.from(out).filter(Boolean);
+}
+
+export async function llmDeriveKeywords(jdText: string): Promise<JDKeywords> {
+  const prompt = `
+From the JOB DESCRIPTION below, extract hiring themes/competencies as keywords with realistic synonyms
+that might appear on resumes. Do NOT assume any industry. Use only what the JD implies.
+
+Return ONLY JSON:
+{
+  "must": [{"name":"", "synonyms":["",""]}],
+  "nice": [{"name":"", "synonyms":["",""]}]
+}
+
+Rules:
+- 6–10 "must" items (core responsibilities, core competencies, critical tools/processes).
+- 4–8  "nice" items (nice-to-have tools, domains, certifications).
+- Synonyms: short realistic variants (abbreviations, spelling variants, common phrases). 2–6 per item.
+- No commentary. JSON only.
+
+JOB DESCRIPTION:
+"""${jdText.slice(0, 12000)}"""
+`;
+  const model = await jsonModel(0);
+  const res = await withRetry(() => model.generateContent(prompt), "jd-keywords");
+  let out = j<JDKeywords>(res.response.text());
+
+  if (!out || (!out.must?.length && !out.nice?.length)) {
+    const terms = topTermsFromJD(jdText, 20);
+    const must = terms.slice(0, 10).map(name => ({ name, synonyms: localSynonyms(name) }));
+    const nice = terms.slice(10, 18).map(name => ({ name, synonyms: localSynonyms(name) }));
+    out = { must, nice };
+  }
+
+  const norm = (s: string) => s.toLowerCase().trim();
+  const uniq = (arr: string[]) => Array.from(new Set(arr.map(norm))).filter(Boolean);
+
+  out.must = (out.must || [])
+    .map(k => ({ name: norm(k.name || ""), synonyms: uniq([...(k.synonyms || []), ...localSynonyms(k.name || "")]) }))
+    .filter(k => k.name);
+  out.nice = (out.nice || [])
+    .map(k => ({ name: norm(k.name || ""), synonyms: uniq([...(k.synonyms || []), ...localSynonyms(k.name || "")]) }))
+    .filter(k => k.name);
+
+  if (!out.must.length && !out.nice.length) {
+    const terms = topTermsFromJD(jdText, 16);
+    out.must = terms.slice(0, 8).map(name => ({ name, synonyms: localSynonyms(name) }));
+    out.nice = terms.slice(8, 16).map(name => ({ name, synonyms: localSynonyms(name) }));
+  }
+  return out;
+}
+
+/** ───────────── Heuristic fuzzy scoring over resume text ───────────── */
+export type HeuristicScore = {
+  coverage: number;    // 0..1
+  matched: string[];
+  missing: string[];   // must only
+};
+function norm(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9\+\.\-#& ]+/g, " ").replace(/\s+/g, " ").trim();
+}
+function fuzzyContains(text: string, phrase: string): boolean {
+  const T = " " + norm(text) + " ";
+  const p = norm(phrase);
+  if (!p) return false;
+  if (T.includes(` ${p} `)) return true;
+  if (T.includes(p)) return true;
+  // simple char-tolerant (lev<=1)
+  const L = p.length;
+  for (let i = 0; i <= T.length - L; i++) {
+    let d = 0; for (let j = 0; j < L && d <= 1; j++) if (T[i + j] !== p[j]) d++;
+    if (d <= 1) return true;
+  }
+  return false;
+}
+export function scoreHeuristically(resumeText: string, kw: JDKeywords): HeuristicScore {
+  const text = resumeText.toLowerCase();
+  const must = kw.must.map(k => ({ canon: k.name, syns: [k.name, ...k.synonyms] }));
+  const nice = kw.nice.map(k => ({ canon: k.name, syns: [k.name, ...k.synonyms] }));
+  const matched = new Set<string>();
+  const hit = (syns: string[]) => syns.some(s => fuzzyContains(text, s));
+
+  let mf = 0; for (const g of must) if (hit(g.syns)) { mf++; matched.add(g.canon); }
+  let nf = 0; for (const g of nice) if (hit(g.syns)) { nf++; matched.add(g.canon); }
+
+  const mustCov = must.length ? mf / must.length : 1;
+  const niceCov = nice.length ? nf / Math.max(1, nice.length) : 1;
+  const coverage = 0.75 * mustCov + 0.25 * niceCov;
+  const missing = must.filter(g => !matched.has(g.canon)).map(g => g.canon);
+  return { coverage, matched: Array.from(matched), missing };
+}
+
+/** ───────────── LLM human rubric (kept, but blended) ───────────── */
 export async function llmGradeCandidate(jdText: string, resumeText: string) {
   const prompt = `
 You are a senior recruiter assessing a candidate vs a JOB DESCRIPTION.
@@ -130,21 +256,15 @@ Think step-by-step like a human reviewer. Use evidence from the resume.
 
 Return ONLY JSON:
 {
-  "score": 0,                     // 0..100 overall
-  "breakdown": {
-    "jdAlignment": 0,            // 0..100 (responsibilities/deliverables)
-    "impact": 0,                 // 0..100 (results, achievements)
-    "toolsAndMethods": 0,        // 0..100 (tools/processes relevant to JD)
-    "domainKnowledge": 0,        // 0..100 (industry/regulatory/context)
-    "communication": 0           // 0..100 (writing clarity in resume)
-  },
+  "score": 0,
+  "breakdown": { "jdAlignment": 0, "impact": 0, "toolsAndMethods": 0, "domainKnowledge": 0, "communication": 0 },
   "matchedSkills": ["..."],
   "missingSkills": ["..."],
   "strengths": ["..."],
   "weaknesses": ["..."],
   "yearsExperienceEstimate": 0,
   "educationSummary": "",
-  "questions": ["..."]           // 5–6 unique questions tailored to THIS candidate and THIS JD
+  "questions": ["..."]      // 5–6 tailored questions for THIS candidate vs THIS JD
 }
 
 JOB DESCRIPTION:
@@ -156,8 +276,11 @@ RESUME:
   const model = await jsonModel(0.2);
   const res = await withRetry(() => model.generateContent(prompt), "grade-candidate");
   const out = j<any>(res.response.text()) || {};
-  // Guardrails
   out.score = Math.max(0, Math.min(100, Number(out.score || 0)));
   if (!Array.isArray(out.questions)) out.questions = [];
+  if (!Array.isArray(out.matchedSkills)) out.matchedSkills = [];
+  if (!Array.isArray(out.missingSkills)) out.missingSkills = [];
+  if (!Array.isArray(out.strengths)) out.strengths = [];
+  if (!Array.isArray(out.weaknesses)) out.weaknesses = [];
   return out;
 }
