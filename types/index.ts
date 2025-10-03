@@ -1,9 +1,8 @@
 export interface JobRequirements {
   title: string;
   description: string;
-  requiredSkills: string[];      // UI can send []
-  minYearsExperience: number;    // optional at runtime
-  educationLevel: string;        // optional at runtime
+  minYearsExperience?: number;
+  educationLevel?: string;
 }
 
 export interface Candidate {
@@ -18,21 +17,18 @@ export interface Candidate {
   skills: string[];
   summary: string;
   matchScore: number;
+  skillsEvidencePct: number;   // NEW: deterministic skills/evidence percentage
   strengths: string[];
   weaknesses: string[];
   gaps: string[];
   mentoringNeeds: string[];
-  questions: string[];
+  questions: string[];         // NEW: per-candidate tailored questions
 }
 
 export interface AnalysisResult {
   candidates: Candidate[];
-  questions: {
-    technical: string[];
-    educational: string[];
-    situational: string[];
-  };
   errors?: { file: string; message: string }[];
+  meta?: any;
 }
 
 export interface UploadedFile {
