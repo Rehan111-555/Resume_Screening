@@ -1,29 +1,67 @@
+// app/api/analyze-resumes/route.ts
 import { NextRequest, NextResponse } from "next/server";
-import type { UICandidate, ResumeProfile } from "@/utils/geminiClient.server";
+import type { Candidate } from "@/types";
 import {
-  extractJobSignals,
   extractProfileFromFile,
-  scoreCandidate,
-  questionsForCandidate,
+  extractJobSignals,
+  analyzeOneCandidate,
+  safeParse,
+  type ResumeProfile,
 } from "@/utils/geminiClient.server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// concurrency limiter
-function limiter(max: number) {
+/* ------------- concurrency limiter ------------- */
+function createLimiter(maxConcurrent: number) {
   let active = 0;
-  const q: Array<() => void> = [];
-  const next = () => { active--; const run = q.shift(); if (run) { active++; run(); } };
-  return async <T>(task: () => Promise<T>): Promise<T> => {
-    if (active >= max) await new Promise<void>(res => q.push(res));
+  const queue: Array<() => void> = [];
+  const next = () => {
+    active--;
+    const run = queue.shift();
+    if (run) {
+      active++;
+      run();
+    }
+  };
+  return async function <T>(task: () => Promise<T>): Promise<T> {
+    if (active >= maxConcurrent) await new Promise<void>((res) => queue.push(res));
     active++;
-    try { return await task(); } finally { next(); }
+    try {
+      return await task();
+    } finally {
+      next();
+    }
   };
 }
 
-function toYears(months: number) { return +(months/12).toFixed(2); }
+/* --------- date helpers (experience calc fallback) --------- */
+function parseAnyDate(s?: string): Date | null {
+  if (!s) return null;
+  const clean = String(s).replace(/(\d{1,2})[.-](\d{1,2})[.-](\d{2,4})/, "$2/$1/$3");
+  const d = new Date(clean);
+  if (!isNaN(d.getTime())) return d;
+  const m = clean.match(/([A-Za-z]{3,})\s+(\d{4})/);
+  if (m) {
+    const dt = new Date(`${m[1]} 1, ${m[2]}`);
+    if (!isNaN(dt.getTime())) return dt;
+  }
+  return null;
+}
+function monthsBetween(start?: string, end?: string): number {
+  const s = parseAnyDate(start);
+  const e = parseAnyDate(end) || new Date();
+  if (!s || !e) return 0;
+  let months = (e.getFullYear() - s.getFullYear()) * 12 + (e.getMonth() - s.getMonth());
+  return Math.max(0, months);
+}
+function totalExperienceYears(exp?: { start?: string; end?: string }[]): number {
+  if (!exp?.length) return 0;
+  const months = exp.reduce((acc, item) => acc + monthsBetween(item.start, item.end), 0);
+  return months / 12;
+}
 
+/* ---------------------- route ---------------------- */
 export async function POST(req: NextRequest) {
   try {
     const form = await req.formData();
@@ -32,88 +70,96 @@ export async function POST(req: NextRequest) {
     if (!jrRaw || typeof jrRaw !== "string") {
       return NextResponse.json({ error: "Missing jobRequirements (stringified JSON)." }, { status: 400 });
     }
-    const job = JSON.parse(jrRaw);
+    const jobRequirements = JSON.parse(jrRaw);
 
-    // ---- size & count guardrails to 100 files / 500MB total ----
     const resumeFiles = form.getAll("resumes") as File[];
-    if (!resumeFiles.length) return NextResponse.json({ error: "No resumes uploaded." }, { status: 400 });
-    if (resumeFiles.length > 100) return NextResponse.json({ error: "Max 100 resumes per batch." }, { status: 400 });
+    if (!resumeFiles.length) {
+      return NextResponse.json({ error: "No resumes uploaded (field name must be 'resumes')." }, { status: 400 });
+    }
 
-    let totalBytes = 0;
-    resumeFiles.forEach(f => totalBytes += f.size || 0);
-    if (totalBytes > 500 * 1024 * 1024) return NextResponse.json({ error: "Total upload limit is 500MB." }, { status: 400 });
-
+    // normalize files
     const files = await Promise.all(
-      resumeFiles.map(async f => ({
+      resumeFiles.map(async (f) => ({
         name: f.name || "resume",
         mimeType: f.type || "application/octet-stream",
         bytes: Buffer.from(await f.arrayBuffer()),
       }))
     );
 
-    // 1) JD → competency signals (must/nice + synonyms)
-    const signals = await extractJobSignals(job);
+    const limit = createLimiter(6);
+    const errors: { file: string; message: string }[] = [];
 
-    // 2) Extract profiles in parallel (limited)
-    const run = limiter(6);
-    const profiles: { file: string; profile: ResumeProfile }[] = [];
-    for (const file of files) {
-      profiles.push({
-        file: file.name,
-        profile: await run(() => extractProfileFromFile(file)),
-      });
+    // --- 1) Extract JD signals (role-agnostic) ---
+    let signals;
+    try {
+      signals = await extractJobSignals(jobRequirements);
+    } catch (e: any) {
+      return NextResponse.json(
+        { error: "extract-jobspec", details: String(e?.message || e) },
+        { status: 500 }
+      );
     }
 
-    // 3) Score + per-candidate questions
-    const candidates: UICandidate[] = [];
-    for (const { file, profile } of profiles) {
-      const rs = scoreCandidate(job, signals, profile);
+    // --- 2) Extract profiles for all files ---
+    const profs = await Promise.all(
+      files.map((file) =>
+        limit(async () => {
+          try {
+            const profile = await extractProfileFromFile(file);
+            if (!profile?.name) profile.name = file.name.replace(/\.(pdf|docx|doc|png|jpg|jpeg)$/i, "") || "Unknown";
+            return { file, profile };
+          } catch (e: any) {
+            errors.push({ file: file.name, message: "Profile extraction failed; using empty fallback." });
+            const fallback: ResumeProfile = {
+              name: file.name.replace(/\.(pdf|docx|doc|png|jpg|jpeg)$/i, "") || "Unknown",
+              email: "",
+              phone: "",
+              location: "",
+              title: "",
+              skills: [],
+              summary: "",
+              education: [],
+              experience: [],
+            };
+            return { file, profile: fallback };
+          }
+        })
+      )
+    );
 
-      const edu = (profile.education && profile.education.length)
-        ? [profile.education[0]?.degree || "", profile.education[0]?.institution || ""].filter(Boolean).join(", ")
-        : "";
-
-      let qs: string[] = [];
+    // --- 3) LLM per-candidate analysis (questions included) ---
+    const candidates: Candidate[] = [];
+    for (const { file, profile } of profs) {
       try {
-        qs = await run(() => questionsForCandidate(job, profile));
-      } catch { /* non-fatal */ }
-
-      candidates.push({
-        id: crypto.randomUUID(),
-        name: profile.name || file,
-        email: profile.email || "",
-        phone: profile.phone || "",
-        location: profile.location || "",
-        title: profile.title || "",
-        yearsExperience: toYears((profile.experience || []).reduce((n, x) => {
-          const s = x.start ? new Date(x.start) : null;
-          const e = x.end ? new Date(x.end) : new Date();
-          if (!s || isNaN(+s) || !e || isNaN(+e)) return n;
-          return n + Math.max(0, (e.getFullYear()-s.getFullYear())*12 + (e.getMonth()-s.getMonth()));
-        }, 0)),
-        education: edu,
-        skills: profile.skills || [],
-        summary: profile.summary || "",
-        matchScore: rs.overall,
-        strengths: rs.strengths,
-        weaknesses: rs.weaknesses,
-        gaps: rs.gaps,
-        mentoringNeeds: rs.mentoring,
-        questions: qs,
-      });
+        // ensure yearsExperience present
+        const yearsFromDates = totalExperienceYears(profile.experience);
+        const cand = await analyzeOneCandidate(jobRequirements, signals, profile);
+        if ((!cand.yearsExperience || cand.yearsExperience < 0.1) && yearsFromDates > 0) {
+          cand.yearsExperience = Number(yearsFromDates.toFixed(2));
+        }
+        candidates.push(cand);
+      } catch (e: any) {
+        errors.push({ file: file.name, message: `LLM analysis failed: ${String(e?.message || e)}` });
+      }
     }
 
-    // sort by overall
-    candidates.sort((a,b) => b.matchScore - a.matchScore);
+    // --- 4) Sort by match score DESC ---
+    candidates.sort((a, b) => (b.matchScore || 0) - (a.matchScore || 0));
 
-    // 4) Return
-    return NextResponse.json({
-      candidates,
-      questions: { technical: [], educational: [], situational: [] }, // kept for UI compatibility
-      errors: [],
-    });
+    // --- 5) Build a small global questions bucket from top-3 candidate sets ---
+    const topQs = candidates
+      .slice(0, Math.min(3, candidates.length))
+      .flatMap((c) => Array.isArray(c.questions) ? c.questions.slice(0, 4) : []);
+    const questions = topQs.length
+      ? {
+          technical: topQs.slice(0, 4),
+          educational: topQs.slice(4, 7),
+          situational: topQs.slice(7, 10),
+        }
+      : undefined;
 
-  } catch (e: any) {
-    return NextResponse.json({ error: "Resume analysis failed", details: String(e?.message || e) }, { status: 500 });
+    return NextResponse.json({ candidates, questions, errors });
+  } catch (err: any) {
+    return NextResponse.json({ error: "Resume analysis failed", details: String(err?.message || err) }, { status: 500 });
   }
 }
