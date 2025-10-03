@@ -49,9 +49,14 @@ async function pickModel(): Promise<ModelId> {
   if (cachedModel) return cachedModel;
   for (const m of MODEL_CANDIDATES) {
     try {
-      // a cheap probe
-      const probe = genAI.getGenerativeModel({ model: m, generationConfig: { temperature: 0 }});
-      await withRetry(() => probe.generateContent("ok"), `probe ${m}`);
+      // a cheap probe (use proper contents shape)
+      const probe = genAI.getGenerativeModel({ model: m, generationConfig: { temperature: 0 } });
+      await withRetry(
+        () => probe.generateContent({
+          contents: [{ role: "user", parts: [{ text: "ok" }] }]
+        }),
+        `probe ${m}`
+      );
       cachedModel = m;
       break;
     } catch { /* continue */ }
@@ -123,10 +128,21 @@ function safeJson<T = any>(raw: string): T | null {
 }
 
 async function repairJson<T = any>(raw: string): Promise<T> {
-  const model = genAI.getGenerativeModel({ model: await pickModel(), generationConfig: { temperature: 0, maxOutputTokens: 512 } });
-  const res = await withRetry(() => model.generateContent([
-    {role:"user", parts:[{text:`Fix the following content into VALID JSON ONLY. No explanations.\n\n${raw}`}]}]),
-    "repair-json");
+  const model = genAI.getGenerativeModel({
+    model: await pickModel(),
+    generationConfig: { temperature: 0, maxOutputTokens: 512 }
+  });
+
+  const res = await withRetry(
+    () => model.generateContent({
+      contents: [{
+        role: "user",
+        parts: [{ text: `Fix the following content into VALID JSON ONLY. No explanations.\n\n${raw}` }]
+      }]
+    }),
+    "repair-json"
+  );
+
   const txt = res.response.text();
   const parsed = safeJson<T>(txt);
   if (!parsed) throw new Error("Failed to repair JSON");
@@ -164,7 +180,14 @@ export async function extractJobSignals(job: JobRequirements): Promise<JobSignal
     model: await pickModel(),
     generationConfig: { temperature: 0.2, maxOutputTokens: 1400 }
   });
-  const res = await withRetry(() => model.generateContent(buildSignalsPrompt(job)), "extract-job-signals");
+
+  const res = await withRetry(
+    () => model.generateContent({
+      contents: [{ role: "user", parts: [{ text: buildSignalsPrompt(job) }] }]
+    }),
+    "extract-job-signals"
+  );
+
   const txt = res.response.text();
   return safeJson<JobSignals>(txt) || await repairJson<JobSignals>(txt);
 }
@@ -201,7 +224,14 @@ export async function extractProfileFromFile(file: { bytes: Buffer; mimeType: st
   });
 
   const res = await withRetry(() => model.generateContent({
-    contents: [{ role: "user", parts: [{ text: `Extract profile from: ${file.name}` }, toInlinePart(file.bytes, file.mimeType), { text: buildProfilePrompt(file.name) }]}]
+    contents: [{
+      role: "user",
+      parts: [
+        { text: `Extract profile from: ${file.name}` },
+        toInlinePart(file.bytes, file.mimeType),
+        { text: buildProfilePrompt(file.name) }
+      ]
+    }]
   }), "extract-profile");
 
   const txt = res.response.text();
@@ -322,7 +352,14 @@ export async function questionsForCandidate(job: JobRequirements, prof: ResumePr
     model: await pickModel(),
     generationConfig: { temperature: 0.5, maxOutputTokens: 900 }
   });
-  const res = await withRetry(() => model.generateContent(buildQuestionPrompt(job, prof)), "questions-for-candidate");
+
+  const res = await withRetry(
+    () => model.generateContent({
+      contents: [{ role: "user", parts: [{ text: buildQuestionPrompt(job, prof) }] }]
+    }),
+    "questions-for-candidate"
+  );
+
   const txt = res.response.text();
   const parsed = safeJson<{questions:string[]}>(txt) || await repairJson<{questions:string[]}>(txt);
   return Array.isArray(parsed.questions) ? parsed.questions.slice(0,5) : [];
