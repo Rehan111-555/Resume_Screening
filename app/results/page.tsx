@@ -24,8 +24,8 @@ export default function ResultsPage() {
     let filtered = [...state.analysisResult.candidates];
 
     if (filterEducation) {
-      filtered = filtered.filter(c =>
-        (c.education || '').toLowerCase().includes(filterEducation.toLowerCase())
+      filtered = filtered.filter(candidate =>
+        (candidate.education || '').toLowerCase().includes(filterEducation.toLowerCase())
       );
     }
 
@@ -34,10 +34,13 @@ export default function ResultsPage() {
       let bValue: any = b[sortField];
 
       if (sortField === 'education') {
-        const order = ['High School', 'Bachelor', 'Master', 'PhD'];
-        aValue = order.findIndex(level => a.education.includes(level));
-        bValue = order.findIndex(level => b.education.includes(level));
+        const order = ['High School', 'Intermediate', 'Bachelor', 'Master', 'PhD'];
+        const idxA = order.findIndex(x => (a.education || '').includes(x));
+        const idxB = order.findIndex(x => (b.education || '').includes(x));
+        aValue = idxA === -1 ? 0 : idxA;
+        bValue = idxB === -1 ? 0 : idxB;
       }
+
       return sortOrder === 'desc' ? bValue - aValue : aValue - bValue;
     });
 
@@ -50,14 +53,16 @@ export default function ResultsPage() {
   };
 
   const handleExport = () => {
-    if (state.analysisResult?.candidates) exportToCSV(state.analysisResult.candidates);
+    if (state.analysisResult?.candidates) {
+      exportToCSV(state.analysisResult.candidates);
+    }
   };
 
   if (!state.analysisResult) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600 mx-auto mb-4"></div>
           <p className="text-gray-600">Loading results...</p>
         </div>
       </div>
@@ -65,7 +70,7 @@ export default function ResultsPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-slate-50 via-white to-slate-50">
+    <div className="min-h-screen bg-gray-50">
       <div className="container mx-auto px-4 py-8">
         <div className="max-w-7xl mx-auto">
           {/* Header */}
@@ -78,17 +83,17 @@ export default function ResultsPage() {
                 <ArrowLeft className="h-4 w-4 mr-2" />
                 Start Over
               </button>
-              <h1 className="text-4xl font-black bg-gradient-to-r from-fuchsia-600 via-blue-600 to-emerald-500 bg-clip-text text-transparent">
+              <h1 className="text-4xl font-bold bg-gradient-to-r from-indigo-600 to-fuchsia-600 bg-clip-text text-transparent">
                 Candidate Rankings
               </h1>
               <p className="text-gray-600 mt-2">
-                {sortedCandidates.length} candidates analyzed by AI with human-style grading
+                {sortedCandidates.length} candidates analyzed by AI
               </p>
             </div>
 
             <button
               onClick={handleExport}
-              className="flex items-center px-6 py-3 rounded-lg text-white bg-gradient-to-r from-emerald-600 to-teal-600 hover:opacity-90 transition"
+              className="flex items-center px-6 py-3 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors"
             >
               <Download className="h-4 w-4 mr-2" />
               Export CSV
@@ -96,7 +101,7 @@ export default function ResultsPage() {
           </div>
 
           {/* Controls */}
-          <div className="bg-white rounded-xl shadow-md p-6 mb-6 border border-slate-100">
+          <div className="bg-white rounded-xl shadow p-6 mb-6">
             <div className="flex flex-wrap gap-4 items-center">
               <div className="flex items-center">
                 <Filter className="h-4 w-4 mr-2 text-gray-500" />
