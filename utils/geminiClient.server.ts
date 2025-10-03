@@ -44,7 +44,8 @@ async function pickModel(): Promise<ModelId> {
         model: id,
         generationConfig: { temperature: 0.1, maxOutputTokens: 8, responseMimeType: "text/plain" },
       });
-      await withRetry(() => probe.generateContent("ping"), `probe ${id}`);
+      // simple probe
+      await withRetry(() => probe.generateContent({ contents: [{ role: "user", parts: [{ text: "ping" }] }] }), `probe ${id}`);
       cachedModelId = id;
       return id;
     } catch {
@@ -78,13 +79,15 @@ async function repairToJson<T = any>(raw: string): Promise<T> {
     ],
   });
   const res = await withRetry(
-    () => model.generateContent([{ role: "user", parts: [{ text: `Fix to strict JSON:\n${raw}` }] } as any]),
+    () =>
+      model.generateContent({
+        contents: [{ role: "user", parts: [{ text: `Fix to strict JSON:\n${raw}` }] }],
+      }),
     "json-repair"
   );
   const text = res.response.text();
   const parsed = safeParse<T>(text);
   if (parsed) return parsed;
-  // last-ditch: wrap object-likes
   try { return JSON.parse(text) as T; } catch {}
   throw new Error("JSON repair failed");
 }
@@ -250,7 +253,10 @@ export async function extractJobSignals(job: JobRequirements): Promise<JobSignal
     generationConfig: { temperature: 0.2, maxOutputTokens: 1024, responseMimeType: "application/json" },
   });
   const res = await withRetry(
-    () => model.generateContent([{ role: "user", parts: [{ text: jobSignalsPrompt(job) }] } as any]),
+    () =>
+      model.generateContent({
+        contents: [{ role: "user", parts: [{ text: jobSignalsPrompt(job) }] }],
+      }),
     `job-signals (${modelId})`
   );
   const text = res.response.text();
@@ -274,7 +280,10 @@ export async function analyzeOneCandidate(
   });
 
   const res = await withRetry(
-    () => model.generateContent([{ role: "user", parts: [{ text: analysisPrompt(job, jobSignals, profile) }] } as any]),
+    () =>
+      model.generateContent({
+        contents: [{ role: "user", parts: [{ text: analysisPrompt(job, jobSignals, profile) }] }],
+      }),
     `analyze-candidate (${modelId})`
   );
 
@@ -282,7 +291,7 @@ export async function analyzeOneCandidate(
   const parsed = safeParse<{ candidate: Candidate }>(text) || (await repairToJson<{ candidate: Candidate }>(text));
   const cand = parsed.candidate;
 
-  // Guardrails: ensure arrays exist
+  // Guardrails
   cand.skills ||= [];
   cand.strengths ||= [];
   cand.weaknesses ||= [];
@@ -290,7 +299,6 @@ export async function analyzeOneCandidate(
   cand.mentoringNeeds ||= [];
   cand.questions ||= [];
 
-  // Clamp match score
   cand.matchScore = Math.max(0, Math.min(100, Math.round(Number(cand.matchScore) || 0)));
   return cand;
 }
