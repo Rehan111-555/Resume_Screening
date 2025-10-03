@@ -3,7 +3,7 @@ export interface JobRequirements {
   title: string;
   description: string;
   minYearsExperience: number;
-  educationLevel: string; // e.g., "Bachelor's", "Master's", etc.
+  educationLevel: string;
 }
 
 export interface Candidate {
@@ -13,26 +13,20 @@ export interface Candidate {
   phone: string;
   location: string;
   title: string;
-  yearsExperience: number; // decimal years
+  yearsExperience: number;
   education: string;
   skills: string[];
   summary: string;
-  matchScore: number; // 0..100
+  matchScore: number;
   strengths: string[];
   weaknesses: string[];
   gaps: string[];
   mentoringNeeds: string[];
-  questions?: string[]; // per-candidate tailored interview questions
+  questions: string[]; // <-- per-candidate questions
 }
 
 export interface AnalysisResult {
   candidates: Candidate[];
-  // Optional global questions (we still show them if available)
-  questions?: {
-    technical: string[];
-    educational: string[];
-    situational: string[];
-  };
   errors?: { file: string; message: string }[];
 }
 
