@@ -1,11 +1,11 @@
+// utils/geminiClient.server.ts
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
 /**
- * ===== Why this version works better =====
- * - Two-pass LLM pipeline (JD signals -> Resume facts) + deterministic scoring
- * - No responseSchema (fixed your 400 errors); uses repair-to-JSON fallback
- * - Bigger token budget; robust retry/timeout logic
- * - Role-agnostic: works for ANY JD (tech, HR, finance, etc.)
+ * Stable JSON pipeline:
+ * - Force JSON outputs with responseMimeType + system instruction
+ * - Robust parse/repair that NEVER throws (returns safe defaults)
+ * - Works with PDFs (when passed as inlineData from the route)
  */
 
 const key = process.env.GOOGLE_AI_API_KEY;
@@ -13,21 +13,23 @@ if (!key) throw new Error("Missing GOOGLE_AI_API_KEY in .env.local");
 
 const genAI = new GoogleGenerativeAI(key);
 
-// Prefer Pro; fall back to Flash automatically
+// Prefer Pro; fall back to Flash
 const MODEL_CANDIDATES = ["gemini-2.5-pro", "gemini-2.5-flash"] as const;
 type ModelId = (typeof MODEL_CANDIDATES)[number];
-
 let cachedModel: ModelId | null = null;
 
 const TIMEOUT_MS = 70_000;
 const MAX_RETRIES = 2;
+
+/* ----------------------- infra helpers ----------------------- */
 
 function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
 
 async function withTimeout<T>(p: Promise<T>, ms = TIMEOUT_MS): Promise<T> {
   let t: any;
   const guard = new Promise<never>((_, rej) => { t = setTimeout(() => rej(new Error("Request timed out")), ms); });
-  try { return (await Promise.race([p, guard])) as T; } finally { clearTimeout(t); }
+  try { return (await Promise.race([p, guard])) as T; }
+  finally { clearTimeout(t); }
 }
 
 async function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
@@ -49,25 +51,22 @@ async function pickModel(): Promise<ModelId> {
   if (cachedModel) return cachedModel;
   for (const m of MODEL_CANDIDATES) {
     try {
-      // a cheap probe (use proper contents shape)
       const probe = genAI.getGenerativeModel({ model: m, generationConfig: { temperature: 0 } });
       await withRetry(
-        () => probe.generateContent({
-          contents: [{ role: "user", parts: [{ text: "ok" }] }]
-        }),
+        () => probe.generateContent({ contents: [{ role: "user", parts: [{ text: "ok" }] }] }),
         `probe ${m}`
       );
       cachedModel = m;
       break;
-    } catch { /* continue */ }
+    } catch { /* try next */ }
   }
   if (!cachedModel) throw new Error("No Gemini 2.5 model enabled.");
   return cachedModel;
 }
 
-/* ----------------------- helpers ----------------------- */
+/* ----------------------- shared types ----------------------- */
 
-type ResumeProfile = {
+export type ResumeProfile = {
   name: string;
   email?: string;
   phone?: string;
@@ -77,10 +76,9 @@ type ResumeProfile = {
   summary?: string;
   education?: { degree?: string; field?: string; institution?: string; start?: string; end?: string }[];
   experience?: { title?: string; company?: string; start?: string; end?: string; summary?: string }[];
-  // raw text used only for fuzzy evidence
+  /** raw text (optional) for evidence matching */
   _text?: string;
 };
-export type { ResumeProfile };
 
 export type Candidate = {
   id: string;
@@ -98,27 +96,31 @@ export type Candidate = {
   weaknesses: string[];
   gaps: string[];
   mentoringNeeds: string[];
-  questions?: string[]; // per-candidate unique questions
+  /** optional, per-candidate unique questions for UI */
+  questions?: string[];
 };
 export type { Candidate as UICandidate };
 
-type JobRequirements = {
+export type JobRequirements = {
   title: string;
   description: string;
   minYearsExperience: number;
   educationLevel: string;
 };
 
-type JobSignals = {
+export type JobSignals = {
   must: { name: string; synonyms: string[] }[];
   nice: { name: string; synonyms: string[] }[];
 };
+
+/* ----------------------- small utils ----------------------- */
 
 function toInlinePart(bytes: Buffer, mimeType: string) {
   return { inlineData: { data: bytes.toString("base64"), mimeType } };
 }
 
 function safeJson<T = any>(raw: string): T | null {
+  if (!raw) return null;
   try { return JSON.parse(raw) as T; } catch {}
   const fenced = raw.replace(/```json|```/g, "").trim();
   try { return JSON.parse(fenced) as T; } catch {}
@@ -127,25 +129,38 @@ function safeJson<T = any>(raw: string): T | null {
   return null;
 }
 
-async function repairJson<T = any>(raw: string): Promise<T> {
+const SYSTEM_JSON_ONLY = `
+You are a JSON tool. Output MUST be valid JSON only.
+No markdown, no backticks, no comments, no explanations—JSON object/array only.
+`.trim();
+
+/**
+ * Repair JSON: forces JSON and NEVER throws (returns fallback).
+ */
+async function repairJson<T = any>(raw: string, fallback: T = {} as T): Promise<T> {
   const model = genAI.getGenerativeModel({
     model: await pickModel(),
-    generationConfig: { temperature: 0, maxOutputTokens: 512 }
+    systemInstruction: SYSTEM_JSON_ONLY,
+    generationConfig: {
+      temperature: 0,
+      maxOutputTokens: 512,
+      responseMimeType: "application/json",
+    },
   });
 
   const res = await withRetry(
     () => model.generateContent({
-      contents: [{
-        role: "user",
-        parts: [{ text: `Fix the following content into VALID JSON ONLY. No explanations.\n\n${raw}` }]
-      }]
+      contents: [{ role: "user", parts: [{ text: `Fix the following into VALID JSON.\n\nRAW:\n${raw}` }] }]
     }),
     "repair-json"
   );
 
   const txt = res.response.text();
   const parsed = safeJson<T>(txt);
-  if (!parsed) throw new Error("Failed to repair JSON");
+  if (!parsed) {
+    console.warn("[repair-json] model output not JSON", { len: txt?.length ?? 0 });
+    return fallback; // never throw — avoid 500s
+  }
   return parsed;
 }
 
@@ -162,11 +177,11 @@ Return STRICT JSON with two arrays:
 }
 
 Guidelines:
-- General and role-agnostic. DO NOT hardcode to any single stack.
-- Include domain, tools, certifications, methods, soft skills (management, compliance, customer service, etc), plus obvious synonyms/phrases.
+- General and role-agnostic (not tied to one stack).
+- Include domain, tools, certifications, methods, soft skills; add obvious synonyms/phrases.
 - Keep total items under ~25 across must+nice.
 - Use lowercase in "synonyms".
-- Prefer concise names: e.g., {"name":"shopify liquid","synonyms":["liquid","shopify theme","theme customization"]}
+- Prefer concise names: {"name":"shopify liquid","synonyms":["liquid","shopify theme","theme customization"]}
 
 JOB:
 Title: ${jd.title}
@@ -178,18 +193,17 @@ ${jd.description}
 export async function extractJobSignals(job: JobRequirements): Promise<JobSignals> {
   const model = genAI.getGenerativeModel({
     model: await pickModel(),
-    generationConfig: { temperature: 0.2, maxOutputTokens: 1400 }
+    systemInstruction: SYSTEM_JSON_ONLY,
+    generationConfig: { temperature: 0.2, maxOutputTokens: 1400, responseMimeType: "application/json" }
   });
 
   const res = await withRetry(
-    () => model.generateContent({
-      contents: [{ role: "user", parts: [{ text: buildSignalsPrompt(job) }] }]
-    }),
+    () => model.generateContent({ contents: [{ role: "user", parts: [{ text: buildSignalsPrompt(job) }] }] }),
     "extract-job-signals"
   );
 
   const txt = res.response.text();
-  return safeJson<JobSignals>(txt) || await repairJson<JobSignals>(txt);
+  return safeJson<JobSignals>(txt) || await repairJson<JobSignals>(txt, { must: [], nice: [] });
 }
 
 /* ---------------- Resume → Profile ---------------- */
@@ -211,44 +225,46 @@ Extract a RESUME PROFILE from the attached CV. JSON only:
   "_text": "full plain text of resume for fuzzy matching"
 }
 
-- Dates can be any readable string.
-- If unknown, use "" or [].
-- Keep "skills" concise; prefer technology or competency words.
+Rules:
+- Dates can be any readable string. If unknown, use "" or [].
+- Keep "skills" concise; prefer technology/competency words.
   `.trim();
 }
 
 export async function extractProfileFromFile(file: { bytes: Buffer; mimeType: string; name: string }): Promise<ResumeProfile> {
   const model = genAI.getGenerativeModel({
     model: await pickModel(),
-    generationConfig: { temperature: 0.1, maxOutputTokens: 4096 }
+    systemInstruction: SYSTEM_JSON_ONLY,
+    generationConfig: { temperature: 0.1, maxOutputTokens: 4096, responseMimeType: "application/json" }
   });
 
-  const res = await withRetry(() => model.generateContent({
-    contents: [{
-      role: "user",
-      parts: [
-        { text: `Extract profile from: ${file.name}` },
-        toInlinePart(file.bytes, file.mimeType),
-        { text: buildProfilePrompt(file.name) }
-      ]
-    }]
-  }), "extract-profile");
+  const res = await withRetry(
+    () => model.generateContent({
+      contents: [{
+        role: "user",
+        parts: [
+          { text: `Extract profile from: ${file.name}` },
+          toInlinePart(file.bytes, file.mimeType),
+          { text: buildProfilePrompt(file.name) }
+        ]
+      }]
+    }),
+    "extract-profile"
+  );
 
   const txt = res.response.text();
-  const parsed = safeJson<ResumeProfile>(txt) || await repairJson<ResumeProfile>(txt);
-  if (!parsed.name) parsed.name = file.name.replace(/\.(pdf|docx|png|jpg|jpeg)$/i, "");
+  const fallbackProf: ResumeProfile = {
+    name: file.name.replace(/\.(pdf|docx|png|jpg|jpeg)$/i, ""),
+    skills: [], education: [], experience: [], summary: "", title: ""
+  };
+  const parsed = safeJson<ResumeProfile>(txt) || await repairJson<ResumeProfile>(txt, fallbackProf);
+  if (!parsed.name) parsed.name = fallbackProf.name;
   return parsed;
 }
 
 /* ---------------- Scoring & Questions ---------------- */
 
 function norm(s?: string) { return (s || "").toLowerCase(); }
-function tokenize(s: string): string[] {
-  return norm(s)
-    .replace(/[^a-z0-9+.#]+/g, " ")
-    .split(/\s+/)
-    .filter(Boolean);
-}
 function anyAliasInText(aliases: string[], text: string): boolean {
   const t = " " + norm(text) + " ";
   return aliases.some(a => t.includes(" " + norm(a) + " "));
@@ -288,7 +304,12 @@ export type RichScore = {
 };
 
 export function scoreCandidate(job: JobRequirements, signals: JobSignals, prof: ResumeProfile): RichScore {
-  const fullText = [prof._text, prof.summary, ...(prof.skills || []), ...(prof.experience || []).map(x => [x.title, x.company, x.summary].join(" "))].join("\n");
+  const fullText = [
+    prof._text, prof.summary,
+    ...(prof.skills || []),
+    ...(prof.experience || []).map(x => [x.title, x.company, x.summary].join(" "))
+  ].join("\n");
+
   const mustMatched: string[] = [];
   const mustMissing: string[] = [];
   const niceMatched: string[] = [];
@@ -332,6 +353,8 @@ export function scoreCandidate(job: JobRequirements, signals: JobSignals, prof: 
   return { skillEvidencePct, overall, strengths, weaknesses, gaps, mentoring };
 }
 
+/* ---------------- Candidate questions ---------------- */
+
 function buildQuestionPrompt(job: JobRequirements, prof: ResumeProfile): string {
   return `
 Generate 5 interview questions tailored to THIS candidate and THIS job.
@@ -343,24 +366,33 @@ JD:
 ${job.description.slice(0, 4000)}
 
 RESUME (JSON):
-${JSON.stringify({name:prof.name, title:prof.title, skills:prof.skills, summary:prof.summary, experience:prof.experience?.slice(0,5)})}
+${JSON.stringify({
+  name: prof.name,
+  title: prof.title,
+  skills: (prof.skills || []).slice(0, 30),
+  summary: (prof.summary || "").slice(0, 1000),
+  experience: (prof.experience || []).slice(0, 5)
+})}
   `.trim();
 }
 
 export async function questionsForCandidate(job: JobRequirements, prof: ResumeProfile): Promise<string[]> {
   const model = genAI.getGenerativeModel({
     model: await pickModel(),
-    generationConfig: { temperature: 0.5, maxOutputTokens: 900 }
+    systemInstruction: SYSTEM_JSON_ONLY,
+    generationConfig: { temperature: 0.5, maxOutputTokens: 900, responseMimeType: "application/json" }
   });
 
   const res = await withRetry(
-    () => model.generateContent({
-      contents: [{ role: "user", parts: [{ text: buildQuestionPrompt(job, prof) }] }]
-    }),
+    () => model.generateContent({ contents: [{ role: "user", parts: [{ text: buildQuestionPrompt(job, prof) }] }] }),
     "questions-for-candidate"
   );
 
   const txt = res.response.text();
-  const parsed = safeJson<{questions:string[]}>(txt) || await repairJson<{questions:string[]}>(txt);
-  return Array.isArray(parsed.questions) ? parsed.questions.slice(0,5) : [];
+  const parsed = safeJson<{ questions: string[] }>(txt) || await repairJson<{ questions: string[] }>(txt, { questions: [] });
+  return Array.isArray(parsed.questions) ? parsed.questions.slice(0, 5) : [];
 }
+
+/* ---------------- re-exports for callers ---------------- */
+
+export { toInlinePart };
