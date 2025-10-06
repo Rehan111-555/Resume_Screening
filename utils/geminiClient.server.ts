@@ -1,227 +1,286 @@
-// utils/geminiClient.server.ts
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import {
+  GoogleGenerativeAI,
+  HarmBlockThreshold,
+  HarmCategory,
+} from "@google/generative-ai";
 
+/** ───────────────────────── Setup ───────────────────────── */
 const key = process.env.GOOGLE_AI_API_KEY;
 if (!key) throw new Error("Missing GOOGLE_AI_API_KEY in .env.local");
-
 const genAI = new GoogleGenerativeAI(key);
 
-// Prefer fast model; fall back to pro if needed
-const MODEL_CANDIDATES = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-pro"] as const;
-let cachedModel: string | null = null;
+const MODELS = ["gemini-2.5-flash", "gemini-2.5-pro"] as const;
+type ModelId = (typeof MODELS)[number];
+let cachedModelId: ModelId | null = null;
 
-async function getModelId(): Promise<string> {
-  if (cachedModel) return cachedModel;
-  for (const id of MODEL_CANDIDATES) {
-    try {
-      await genAI.getGenerativeModel({ model: id }).generateContent("ping");
-      cachedModel = id;
-      return id;
-    } catch {
-      /* try next */
-    }
-  }
-  throw new Error(`No enabled Gemini model found. Enable one of: ${MODEL_CANDIDATES.join(", ")}`);
+const TIMEOUT_MS = 55_000;
+const MAX_RETRIES = 2;
+
+function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
+async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  let t: any;
+  const guard = new Promise<never>((_, rej) => { t = setTimeout(() => rej(new Error("Request timed out")), ms); });
+  try { return (await Promise.race([p, guard])) as T; }
+  finally { clearTimeout(t); }
 }
-
-function toInlinePart(bytes: Buffer, mimeType: string) {
-  return { inlineData: { data: bytes.toString("base64"), mimeType } };
-}
-
-// Minimal wait
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
 async function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
-  let err: any;
-  for (let i = 0; i < 2; i++) {
-    try {
-      return await fn();
-    } catch (e: any) {
-      err = e;
-      await sleep(500 * (i + 1));
+  let last: any;
+  for (let i = 0; i <= MAX_RETRIES; i++) {
+    try { return await withTimeout(fn(), TIMEOUT_MS); }
+    catch (e: any) {
+      last = e; const msg = String(e?.message || e);
+      const retriable = /fetch failed|timed out|ETIMEDOUT|429|quota|deadline/i.test(msg);
+      if (!retriable || i === MAX_RETRIES) break;
+      await sleep(700 * Math.pow(2, i));
     }
   }
-  throw new Error(`${label}: ${String(err?.message || err)}`);
+  throw new Error(`${label}: ${String(last?.message || last)}`);
+}
+async function pickModel(): Promise<ModelId> {
+  if (cachedModelId) return cachedModelId;
+  for (const id of MODELS) {
+    try {
+      const m = genAI.getGenerativeModel({
+        model: id,
+        generationConfig: { temperature: 0.1, maxOutputTokens: 8, responseMimeType: "text/plain" },
+      });
+      await withRetry(() => m.generateContent("ping"), `probe ${id}`);
+      cachedModelId = id;
+      return id;
+    } catch { /* try next */ }
+  }
+  throw new Error("No enabled Gemini model (enable gemini-2.5-flash or gemini-2.5-pro).");
 }
 
-function tryParse<T = any>(raw: string): T | null {
+/** ─────────────────────── Safety / JSON ─────────────────── */
+const safetySettings = [
+  { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+  { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+  { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+  { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+];
+const SYS = `You MUST return only valid JSON. No markdown. Use "", 0, false, or [] when unsure.`;
+
+async function jsonModel(temperature = 0) {
+  const id = await pickModel();
+  return genAI.getGenerativeModel({
+    model: id,
+    systemInstruction: SYS,
+    generationConfig: { temperature, maxOutputTokens: 4096, responseMimeType: "application/json" },
+    safetySettings,
+  });
+}
+function j<T = any>(raw: string): T | null {
   try { return JSON.parse(raw) as T; } catch {}
-  const stripped = raw.replace(/```json|```/g, "").trim();
-  try { return JSON.parse(stripped) as T; } catch {}
-  const m = stripped.match(/\{[\s\S]*\}$/);
+  const m = raw.match(/\{[\s\S]*\}$/);
   if (m) { try { return JSON.parse(m[0]) as T; } catch {} }
   return null;
 }
 
-async function repairJson(raw: string): Promise<any> {
-  const model = genAI.getGenerativeModel({ model: await getModelId() });
-  const prompt = `You will be given invalid JSON text. Return ONLY valid JSON that best matches the author's intent. No commentary.
+/** ───────────────────── Resume profile LLM ───────────────── */
+export async function llmExtractProfile(resumeText: string) {
+  const prompt = `
+Extract a clean JSON RESUME PROFILE from the following resume text. Be concise but complete.
 
-RAW:
-${raw}`;
-  const res = await withRetry(() => model.generateContent(prompt), "repair-json");
-  const text = res.response.text();
-  return tryParse(text);
-}
-
-/* ---------------- Types ---------------- */
-export type ResumeProfile = {
-  name: string;
-  email?: string;
-  phone?: string;
-  location?: string;
-  title?: string;
-  skills?: string[];
-  summary?: string;
-  education?: { degree?: string; field?: string; institution?: string; start?: string; end?: string }[];
-  experience?: { title?: string; company?: string; start?: string; end?: string; summary?: string }[];
-};
-
-export type Candidate = {
-  id: string;
-  name: string;
-  email: string;
-  phone: string;
-  location: string;
-  title: string;
-  yearsExperience: number;
-  education: string;
-  skills: string[];
-  summary: string;
-  matchScore: number;      // 0..100
-  strengths: string[];
-  weaknesses: string[];
-  gaps: string[];
-  mentoringNeeds: string[];
-  questions: string[];     // <-- per-candidate interview questions
-};
-
-/* ---------------- Prompts ---------------- */
-
-// Extract a structured Resume Profile from file
-function buildProfilePrompt(filename: string) {
-  return `
-You are a senior resume parser. Read the attached document "${filename}" and return ONLY valid JSON with this shape:
-
+Return ONLY JSON:
 {
-  "name": "string (required)",
-  "email": "string",
-  "phone": "string",
-  "location": "string",
-  "title": "string",
-  "skills": ["string", "..."],
-  "summary": "string",
+  "name": "",
+  "email": "",
+  "phone": "",
+  "location": "",
+  "headline": "",
+  "summary": "",
+  "skills": ["..."],
+  "tools": ["..."],
+  "industryDomains": ["..."],
   "education": [{"degree":"","field":"","institution":"","start":"","end":""}],
-  "experience": [{"title":"","company":"","start":"","end":"","summary":""}]
+  "experience": [{"title":"","company":"","location":"","start":"","end":"","achievements":["..."],"tech":["..."]}],
+  "links": {"portfolio":"","github":"","linkedin":"","other":[]},
+  "yearsExperience": 0
 }
 
-Notes:
-- Extract dates as simple strings (e.g. "Mar 2021", "2020-09").
-- If unknown, use "" (empty string) or [] for arrays.
-- No markdown, no comments — JSON only.
+RESUME:
+"""${resumeText.slice(0, 16000)}"""
 `;
+  const model = await jsonModel(0.1);
+  const res = await withRetry(() => model.generateContent(prompt), "extract-profile");
+  return j<any>(res.response.text()) || {};
 }
 
-// Full candidate analysis strictly against job description
-function buildCandidateAnalysisPrompt(job: any, profile: ResumeProfile) {
-  const jd = `
-JOB TITLE: ${job?.title ?? ""}
-JOB DESCRIPTION:
-${job?.description ?? ""}
+/** ───────────────────── Role-agnostic JD → keywords ───────────────────── */
+export type JDKeywords = {
+  must: { name: string; synonyms: string[] }[];
+  nice: { name: string; synonyms: string[] }[];
+};
 
-SCORING PRINCIPLES:
-- Use ONLY the job description and the candidate profile below. Do not assume hidden requirements.
-- Think like an experienced recruiter and hiring manager.
-- Score 0..100 where 50 = neutral/partial fit, 80+ = strong fit.
-
-RETURN JSON ONLY with this exact shape:
-{
-  "candidates": [
-    {
-      "id": "uuid-or-stable-id",
-      "name": "string",
-      "email": "string",
-      "phone": "string",
-      "location": "string",
-      "title": "string",
-      "yearsExperience": number,
-      "education": "string (e.g., Bachelor of CS, 2020 — UET Lahore)",
-      "skills": ["string", "..."],
-      "summary": "1-3 sentences highlighting fit vs JD",
-      "matchScore": number,       // 0..100
-      "strengths": ["string", "..."],
-      "weaknesses": ["string", "..."],
-      "gaps": ["string", "..."],  // explicit evidence gaps vs JD
-      "mentoringNeeds": ["string", "..."],
-      "questions": ["string", "..."] // 5-7 tailored interview questions about THIS candidate
-    }
-  ]
+const STOP_WORDS = new Set([
+  "the","a","an","and","or","of","for","to","in","on","at","by","with","from","as",
+  "is","are","be","this","that","these","those","will","can","should","must",
+  "we","you","our","their","your","it","they","i","he","she","them","us",
+  "role","job","candidate","position","responsibilities","requirements","preferred",
+  "experience","years","team","work","ability","skills","plus","etc","including",
+]);
+function tokenizeJD(jd: string): string[] {
+  return jd
+    .toLowerCase()
+    .replace(/[^a-z0-9\-\+\.#& ]+/g, " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .filter(t => !STOP_WORDS.has(t))
+    .slice(0, 4000);
 }
-
-Now analyze the candidate profile:
-
-${JSON.stringify(profile, null, 2).slice(0, 8000)}
-`;
-  return jd;
-}
-
-/* ---------------- Public API ---------------- */
-
-export async function extractProfileFromFile(file: { bytes: Buffer; mimeType: string; name: string }): Promise<ResumeProfile> {
-  const model = genAI.getGenerativeModel({ model: await getModelId() });
-  const res = await withRetry(
-    () =>
-      model.generateContent({
-        contents: [
-          {
-            role: "user",
-            parts: [
-              { text: buildProfilePrompt(file.name) },
-              toInlinePart(file.bytes, file.mimeType),
-            ],
-          },
-        ],
-      }),
-    "extract-profile"
-  );
-
-  const text = res.response.text();
-  let parsed = tryParse<ResumeProfile>(text);
-  if (!parsed) parsed = await repairJson(text);
-  if (!parsed || !parsed.name) {
-    // minimal safe shape
-    return {
-      name: file.name.replace(/\.(pdf|docx|png|jpe?g)$/i, "") || "Unknown",
-      skills: [],
-      education: [],
-      experience: [],
-      summary: "",
-      title: "",
-      email: "",
-      phone: "",
-      location: "",
-    };
+function topTermsFromJD(jd: string, count = 16) {
+  const tokens = tokenizeJD(jd);
+  const grams = new Map<string, number>();
+  const add = (k: string) => grams.set(k, (grams.get(k) || 0) + 1);
+  for (let i = 0; i < tokens.length; i++) {
+    add(tokens[i]);
+    if (i + 1 < tokens.length) add(tokens[i] + " " + tokens[i + 1]);
+    if (i + 2 < tokens.length) add(tokens[i] + " " + tokens[i + 2]);
   }
-  return parsed;
+  return Array.from(grams.entries())
+    .sort((a, b) => b[1] - a[1])
+    .map(([k]) => k)
+    .filter(k => k.length >= 3)
+    .slice(0, count);
+}
+function localSynonyms(term: string): string[] {
+  const t = term.toLowerCase().trim();
+  const out = new Set<string>([t]);
+  out.add(t.replace(/\s+/g, ""));
+  out.add(t.replace(/\s+/g, "-"));
+  out.add(t.replace(/\s+/g, "."));
+  out.add(t.replace(/[-._]/g, " "));
+  if (t.endsWith("s")) out.add(t.slice(0, -1)); else out.add(t + "s");
+  out.add(t.replace(/javascript/i, "js"));
+  out.add(t.replace(/\bjs\b/i, "javascript"));
+  out.add(t.replace(/user experience/i, "ux"));
+  out.add(t.replace(/user interface/i, "ui"));
+  return Array.from(out).filter(Boolean);
 }
 
-export async function analyzeProfileWithLLM(job: any, profile: ResumeProfile) {
-  const model = genAI.getGenerativeModel({ model: await getModelId() });
-  const res = await withRetry(
-    () =>
-      model.generateContent({
-        contents: [
-          {
-            role: "user",
-            parts: [{ text: buildCandidateAnalysisPrompt(job, profile) }],
-          },
-        ],
-      }),
-    "analyze-profile"
-  );
+export async function llmDeriveKeywords(jdText: string): Promise<JDKeywords> {
+  const prompt = `
+From the JOB DESCRIPTION below, extract hiring themes/competencies as keywords with realistic synonyms
+that might appear on resumes. Do NOT assume any industry. Use only what the JD implies.
 
-  const text = res.response.text();
-  let parsed = tryParse(text);
-  if (!parsed) parsed = await repairJson(text);
-  return parsed;
+Return ONLY JSON:
+{
+  "must": [{"name":"", "synonyms":["",""]}],
+  "nice": [{"name":"", "synonyms":["",""]}]
+}
+
+Rules:
+- 6–10 "must" items (core responsibilities, core competencies, critical tools/processes).
+- 4–8  "nice" items (nice-to-have tools, domains, certifications).
+- Synonyms: short realistic variants (abbreviations, spelling variants, common phrases). 2–6 per item.
+- No commentary. JSON only.
+
+JOB DESCRIPTION:
+"""${jdText.slice(0, 12000)}"""
+`;
+  const model = await jsonModel(0);
+  const res = await withRetry(() => model.generateContent(prompt), "jd-keywords");
+  let out = j<JDKeywords>(res.response.text());
+
+  if (!out || (!out.must?.length && !out.nice?.length)) {
+    const terms = topTermsFromJD(jdText, 20);
+    const must = terms.slice(0, 10).map(name => ({ name, synonyms: localSynonyms(name) }));
+    const nice = terms.slice(10, 18).map(name => ({ name, synonyms: localSynonyms(name) }));
+    out = { must, nice };
+  }
+
+  const norm = (s: string) => s.toLowerCase().trim();
+  const uniq = (arr: string[]) => Array.from(new Set(arr.map(norm))).filter(Boolean);
+
+  out.must = (out.must || [])
+    .map(k => ({ name: norm(k.name || ""), synonyms: uniq([...(k.synonyms || []), ...localSynonyms(k.name || "")]) }))
+    .filter(k => k.name);
+  out.nice = (out.nice || [])
+    .map(k => ({ name: norm(k.name || ""), synonyms: uniq([...(k.synonyms || []), ...localSynonyms(k.name || "")]) }))
+    .filter(k => k.name);
+
+  if (!out.must.length && !out.nice.length) {
+    const terms = topTermsFromJD(jdText, 16);
+    out.must = terms.slice(0, 8).map(name => ({ name, synonyms: localSynonyms(name) }));
+    out.nice = terms.slice(8, 16).map(name => ({ name, synonyms: localSynonyms(name) }));
+  }
+  return out;
+}
+
+/** ───────────── Heuristic fuzzy scoring over resume text ───────────── */
+export type HeuristicScore = {
+  coverage: number;    // 0..1
+  matched: string[];
+  missing: string[];   // must only
+};
+function norm(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9\+\.\-#& ]+/g, " ").replace(/\s+/g, " ").trim();
+}
+function fuzzyContains(text: string, phrase: string): boolean {
+  const T = " " + norm(text) + " ";
+  const p = norm(phrase);
+  if (!p) return false;
+  if (T.includes(` ${p} `)) return true;
+  if (T.includes(p)) return true;
+  // simple char-tolerant (lev<=1)
+  const L = p.length;
+  for (let i = 0; i <= T.length - L; i++) {
+    let d = 0; for (let j = 0; j < L && d <= 1; j++) if (T[i + j] !== p[j]) d++;
+    if (d <= 1) return true;
+  }
+  return false;
+}
+export function scoreHeuristically(resumeText: string, kw: JDKeywords): HeuristicScore {
+  const text = resumeText.toLowerCase();
+  const must = kw.must.map(k => ({ canon: k.name, syns: [k.name, ...k.synonyms] }));
+  const nice = kw.nice.map(k => ({ canon: k.name, syns: [k.name, ...k.synonyms] }));
+  const matched = new Set<string>();
+  const hit = (syns: string[]) => syns.some(s => fuzzyContains(text, s));
+
+  let mf = 0; for (const g of must) if (hit(g.syns)) { mf++; matched.add(g.canon); }
+  let nf = 0; for (const g of nice) if (hit(g.syns)) { nf++; matched.add(g.canon); }
+
+  const mustCov = must.length ? mf / must.length : 1;
+  const niceCov = nice.length ? nf / Math.max(1, nice.length) : 1;
+  const coverage = 0.75 * mustCov + 0.25 * niceCov;
+  const missing = must.filter(g => !matched.has(g.canon)).map(g => g.canon);
+  return { coverage, matched: Array.from(matched), missing };
+}
+
+/** ───────────── LLM human rubric (kept, but blended) ───────────── */
+export async function llmGradeCandidate(jdText: string, resumeText: string) {
+  const prompt = `
+You are a senior recruiter assessing a candidate vs a JOB DESCRIPTION.
+Think step-by-step like a human reviewer. Use evidence from the resume.
+
+Return ONLY JSON:
+{
+  "score": 0,
+  "breakdown": { "jdAlignment": 0, "impact": 0, "toolsAndMethods": 0, "domainKnowledge": 0, "communication": 0 },
+  "matchedSkills": ["..."],
+  "missingSkills": ["..."],
+  "strengths": ["..."],
+  "weaknesses": ["..."],
+  "yearsExperienceEstimate": 0,
+  "educationSummary": "",
+  "questions": ["..."]      // 5–6 tailored questions for THIS candidate vs THIS JD
+}
+
+JOB DESCRIPTION:
+"""${jdText.slice(0, 10000)}"""
+
+RESUME:
+"""${resumeText.slice(0, 16000)}"""
+`;
+  const model = await jsonModel(0.2);
+  const res = await withRetry(() => model.generateContent(prompt), "grade-candidate");
+  const out = j<any>(res.response.text()) || {};
+  out.score = Math.max(0, Math.min(100, Number(out.score || 0)));
+  if (!Array.isArray(out.questions)) out.questions = [];
+  if (!Array.isArray(out.matchedSkills)) out.matchedSkills = [];
+  if (!Array.isArray(out.missingSkills)) out.missingSkills = [];
+  if (!Array.isArray(out.strengths)) out.strengths = [];
+  if (!Array.isArray(out.weaknesses)) out.weaknesses = [];
+  return out;
 }
