@@ -38,7 +38,7 @@ async function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
     } catch (e: any) {
       last = e;
       const msg = String(e?.message || e);
-      const retriable = /fetch failed|timed out|ETIMEDOUT|429|quota|deadline/i.test(
+      const retriable = /fetch failed|timed out|ETIMEDOUT|429|quota|deadline|5\d\d|ECONN|ENET/i.test(
         msg
       );
       if (!retriable || i === MAX_RETRIES) break;
@@ -141,6 +141,8 @@ export function eduFit(required?: string, have?: string): number {
 export function clamp01(n: number) {
   return Math.max(0, Math.min(1, n));
 }
+
+/** Remove noisy tokens so they never appear as “skills/gaps”. */
 export function cleanTokens(list: string[]): string[] {
   const BAD = new Set(
     [
@@ -153,8 +155,8 @@ export function cleanTokens(list: string[]): string[] {
       "developer",
       "development",
       "customizing",
-      "customizing shopify",
-      "shopify s",
+      "etc",
+      "including",
     ].map((s) => s.toLowerCase())
   );
   return Array.from(
@@ -171,19 +173,25 @@ export function cleanTokens(list: string[]): string[] {
 /** ───────────── heuristic timeline years extractor ───────────── */
 export function estimateYears(text: string): number {
   const t = (text || "").replace(/\s+/g, " ");
-  // patterns like "2019 - 2023", "Jan 2020 to Mar 2024"
   let months = 0;
+
+  // Ranges: "2019 - 2023", "Jan 2020 to Mar 2024", "2018–Present"
   const period =
-    /\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)?\.?\s*(\d{4})\s*(?:-|to|–|—)\s*(?:present|current|now|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)?\.?\s*(\d{4}))\b/gi;
+    /\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)?\.?\s*(\d{4})\s*(?:-|to|–|—)\s*(present|current|now|(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)?\.?\s*(\d{4}))\b/gi;
   let m: RegExpExecArray | null;
   while ((m = period.exec(t))) {
     const y1 = parseInt(m[1], 10);
-    const y2 = m[2] ? parseInt(m[2], 10) : new Date().getFullYear();
+    const y2 = m[2]
+      ? /present|current|now/i.test(m[2])
+        ? new Date().getFullYear()
+        : parseInt(m[2], 10)
+      : new Date().getFullYear();
     if (y1 >= 1980 && y1 <= y2 && y2 <= new Date().getFullYear() + 1) {
       months += (y2 - y1) * 12;
     }
   }
-  // single “X years of experience”
+
+  // Single “X years”
   const single = /\b(\d+(?:\.\d+)?)\s*\+?\s*years?\b/i.exec(t);
   if (single && months === 0) return Math.min(40, parseFloat(single[1]));
   return Math.min(40, Math.round(months / 12));
@@ -281,12 +289,9 @@ function localSynonyms(term: string): string[] {
   out.add(t.replace(/[-._]/g, " "));
   if (t.endsWith("s")) out.add(t.slice(0, -1));
   else out.add(t + "s");
-  out.add(t.replace(/javascript/i, "js"));
-  out.add(t.replace(/\bjs\b/i, "javascript"));
-  out.add(t.replace(/user experience/i, "ux"));
-  out.add(t.replace(/user interface/i, "ui"));
   return Array.from(out).filter(Boolean);
 }
+
 export async function llmDeriveKeywords(jdText: string): Promise<JDKeywords> {
   const prompt = `
 From the JOB DESCRIPTION below, extract hiring themes/competencies as keywords WITH realistic synonyms. Use only JD content.
@@ -314,6 +319,7 @@ JOB DESCRIPTION:
   let out = j<JDKeywords>(res.response.text());
 
   if (!out || (!out.must?.length && !out.nice?.length)) {
+    // robust fallback without hardcoding any domain
     const terms = topTermsFromJD(jdText, 20);
     const must = terms.slice(0, 10).map((name) => ({
       name,
@@ -363,20 +369,20 @@ export type HeuristicScore = {
   matched: string[];
   missing: string[]; // must only
 };
-function norm(s: string): string {
-  return s
+function normText(s: string): string {
+  return (s || "")
     .toLowerCase()
     .replace(/[^a-z0-9\+\.\-#& ]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 function fuzzyContains(text: string, phrase: string): boolean {
-  const T = " " + norm(text) + " ";
-  const p = norm(phrase);
+  const T = " " + normText(text) + " ";
+  const p = normText(phrase);
   if (!p) return false;
   if (T.includes(` ${p} `)) return true;
   if (T.includes(p)) return true;
-  // tiny tol.
+  // small tolerance
   const L = p.length;
   for (let i = 0; i <= T.length - L; i++) {
     let d = 0;
@@ -407,7 +413,7 @@ export function scoreHeuristically(
   return { coverage, matched: Array.from(matched), missing };
 }
 
-/** ───────────── LLM rubric (kept, blended) ───────────── */
+/** ───────────── LLM extraction and rubric ───────────── */
 export async function llmExtractProfile(resumeText: string) {
   const prompt = `
 Extract a clean JSON RESUME PROFILE from the following resume text. Be concise but complete.
@@ -476,4 +482,49 @@ RESUME:
   if (!Array.isArray(out.strengths)) out.strengths = [];
   if (!Array.isArray(out.weaknesses)) out.weaknesses = [];
   return out;
+}
+
+/** ───────────── Domain / evidence percentages (no hardcode) ───────────── */
+export function domainOverlap(
+  jd: JDKeywords,
+  resumeText: string
+): { ratio: number; missing: string[] } {
+  const base = Array.from(
+    new Set(
+      (jd.must || [])
+        .flatMap((k) => [k.name, ...(k.synonyms || [])])
+        .map((s) => (s || "").toLowerCase().trim())
+        .filter(Boolean)
+    )
+  );
+  const text = ` ${normText(resumeText)} `;
+  let found = 0;
+  const missing: string[] = [];
+  for (const t of base) {
+    if (t.length < 2) continue;
+    if (text.includes(` ${t} `) || text.includes(t)) found++;
+    else missing.push(t);
+  }
+  const ratio = base.length ? found / base.length : 0;
+  return { ratio, missing };
+}
+
+export function skillsEvidencePctFromLists(
+  resumeText: string,
+  jd: JDKeywords
+): number {
+  const text = ` ${normText(resumeText)} `;
+  const all = Array.from(
+    new Set(
+      [...(jd.must || []), ...(jd.nice || [])]
+        .flatMap((k) => [k.name, ...(k.synonyms || [])])
+        .map((s) => (s || "").toLowerCase().trim())
+        .filter(Boolean)
+    )
+  );
+  if (!all.length) return 0;
+  let hits = 0;
+  for (const t of all)
+    if (t.length > 1 && (text.includes(` ${t} `) || text.includes(t))) hits++;
+  return Math.round((hits / all.length) * 100);
 }
