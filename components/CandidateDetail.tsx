@@ -1,147 +1,219 @@
 "use client";
 
-import { useState } from "react";
+import { X, Copy, Check } from "lucide-react";
+import { useEffect, useState } from "react";
 import type { Candidate } from "@/types";
 
-export default function CandidateDetail({
-  candidate,
-}: {
+type Props = {
   candidate: Candidate | null;
-}) {
+  /** controls modal visibility */
+  isOpen?: boolean;
+  /** close handler for parent */
+  onClose?: () => void;
+};
+
+/** simple joiner to avoid adding clsx */
+function cx(...parts: Array<string | false | null | undefined>) {
+  return parts.filter(Boolean).join(" ");
+}
+
+export default function CandidateDetail({ candidate, isOpen = false, onClose }: Props) {
   const [copied, setCopied] = useState(false);
+
+  // lock body scroll while open
+  useEffect(() => {
+    if (!isOpen) return;
+    const original = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = original;
+    };
+  }, [isOpen]);
+
+  if (!isOpen || !candidate) return null;
 
   async function copyFormatted() {
     try {
-      const text = candidate?.formatted || "";
+      const text = candidate.formatted || "";
       if (!text) return;
       await navigator.clipboard.writeText(text);
       setCopied(true);
       setTimeout(() => setCopied(false), 1400);
-    } catch {}
+    } catch {
+      // ignore
+    }
   }
 
-  if (!candidate) return null;
-
   return (
-    <div className="p-4">
-      <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold">Candidate Details</h3>
-        <button
-          onClick={copyFormatted}
-          className="text-xs px-3 py-1 rounded-md border bg-white hover:bg-gray-50"
-        >
-          {copied ? "Copied!" : "Copy"}
-        </button>
-      </div>
+    <div
+      className={cx(
+        "fixed inset-0 z-50 flex items-start justify-center",
+        "bg-black/30 backdrop-blur-[1px]"
+      )}
+      aria-modal="true"
+      role="dialog"
+    >
+      {/* click-away background */}
+      <div className="absolute inset-0" onClick={onClose} />
 
-      <div className="grid grid-cols-2 gap-6 mt-4">
-        <div>
-          <h4 className="font-medium text-gray-700">Personal Information</h4>
-          <ul className="mt-2 space-y-1 text-sm">
-            <li>Email: {candidate.email || "Not specified"}</li>
-            <li>Phone: {candidate.phone || "Not specified"}</li>
-            <li>Location: {candidate.location || "Not specified"}</li>
-          </ul>
-        </div>
-        <div>
-          <h4 className="font-medium text-gray-700">Professional Summary</h4>
-          <p className="mt-2 text-sm text-gray-700 whitespace-pre-wrap">
-            {candidate.summary || "Not specified."}
-          </p>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-4 gap-4 mt-6">
-        <InfoTile label="Overall Match" value={`${candidate.matchScore}%`} />
-        <InfoTile
-          label="Experience"
-          value={
-            candidate.yearsExperience > 0
-              ? `${candidate.yearsExperience} ${
-                  candidate.yearsExperience === 1 ? "year" : "years"
-                }`
-              : "0 months"
-          }
-        />
-        <InfoTile label="Skills & Evidence" value={`${candidate.skillsEvidencePct || 0}%`} />
-        <InfoTile label="Education" value={candidate.education || "—"} />
-      </div>
-
-      {!candidate.domainMismatch && (
-        <>
-          <Section title="Skills">
-            <ChipList items={candidate.skills || []} />
-          </Section>
-
-          <Section title="AI Interview Questions">
-            <Bullets items={candidate.questions || []} />
-          </Section>
-
-          <div className="grid grid-cols-2 gap-6">
-            <Section title="Strengths">
-              <Bullets items={candidate.strengths || []} />
-            </Section>
-            <Section title="Areas for Improvement">
-              <Bullets items={candidate.weaknesses || []} />
-            </Section>
+      {/* modal */}
+      <div
+        className={cx(
+          "relative z-10 mt-8 mb-8 w-full max-w-4xl",
+          "rounded-2xl bg-white shadow-2xl ring-1 ring-black/5"
+        )}
+      >
+        {/* header */}
+        <div className="flex items-center justify-between p-4 sm:p-5 border-b">
+          <div className="min-w-0">
+            <h2 className="text-lg font-semibold truncate">
+              Candidate Details — {candidate.name || "—"}
+            </h2>
+            <p className="text-xs text-gray-500 truncate">
+              {candidate.title || candidate.headline || "—"}
+            </p>
           </div>
 
-          <Section title="Identified Gaps">
-            <Bullets items={candidate.gaps || []} />
-          </Section>
-        </>
-      )}
-    </div>
-  );
-}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={copyFormatted}
+              className={cx(
+                "inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-sm",
+                "border-gray-200 text-gray-700 hover:bg-gray-50"
+              )}
+            >
+              {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+              {copied ? "Copied" : "Copy"}
+            </button>
 
-function InfoTile({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-lg bg-gray-50 p-3">
-      <div className="text-xs text-gray-500">{label}</div>
-      <div className="font-semibold">{value}</div>
-    </div>
-  );
-}
+            <button
+              onClick={onClose}
+              className="inline-flex items-center justify-center rounded-md p-2 text-gray-500 hover:bg-gray-100"
+              aria-label="Close"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+        </div>
 
-function Section({
-  title,
-  children,
-}: {
-  title: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="mt-6">
-      <h4 className="font-medium text-gray-800 mb-2">{title}</h4>
-      {children}
-    </div>
-  );
-}
+        {/* body */}
+        <div className="max-h-[75vh] overflow-y-auto p-4 sm:p-6">
+          {/* personal + summary */}
+          <div className="grid gap-6 sm:grid-cols-2">
+            <section>
+              <h3 className="text-sm font-semibold text-gray-900">Personal Information</h3>
+              <dl className="mt-2 space-y-1 text-sm text-gray-700">
+                <div>
+                  <dt className="inline text-gray-500">Email: </dt>
+                  <dd className="inline">{candidate.email || "Not specified"}</dd>
+                </div>
+                <div>
+                  <dt className="inline text-gray-500">Phone: </dt>
+                  <dd className="inline">{candidate.phone || "Not specified"}</dd>
+                </div>
+                <div>
+                  <dt className="inline text-gray-500">Location: </dt>
+                  <dd className="inline">{candidate.location || "Not specified"}</dd>
+                </div>
+              </dl>
+            </section>
 
-function ChipList({ items }: { items: string[] }) {
-  if (!items?.length) return <div className="text-sm text-gray-500">—</div>;
-  return (
-    <div className="flex flex-wrap gap-1">
-      {items.map((x, i) => (
-        <span
-          key={i}
-          className="text-[11px] px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-100"
-        >
-          {x}
-        </span>
-      ))}
-    </div>
-  );
-}
+            <section>
+              <h3 className="text-sm font-semibold text-gray-900">Professional Summary</h3>
+              <p className="mt-2 text-sm text-gray-700 whitespace-pre-line">
+                {candidate.summary || "—"}
+              </p>
+            </section>
+          </div>
 
-function Bullets({ items }: { items: string[] }) {
-  if (!items?.length) return <div className="text-sm text-gray-500">—</div>;
-  return (
-    <ul className="list-disc ml-5 text-sm space-y-1">
-      {items.map((x, i) => (
-        <li key={i}>{x}</li>
-      ))}
-    </ul>
+          {/* match breakdown */}
+          <div className="mt-6 grid gap-3 sm:grid-cols-4">
+            <div className="rounded-lg bg-gray-50 p-3 text-center">
+              <div className="text-xs text-gray-500">Overall Match</div>
+              <div className="text-base font-semibold">{candidate.matchScore ?? 0}%</div>
+            </div>
+            <div className="rounded-lg bg-gray-50 p-3 text-center">
+              <div className="text-xs text-gray-500">Experience</div>
+              <div className="text-base font-semibold">
+                {candidate.yearsExperience > 0
+                  ? `${candidate.yearsExperience} ${
+                      candidate.yearsExperience === 1 ? "year" : "years"
+                    }`
+                  : "0 months"}
+              </div>
+            </div>
+            <div className="rounded-lg bg-gray-50 p-3 text-center">
+              <div className="text-xs text-gray-500">Skills &amp; Evidence</div>
+              <div className="text-base font-semibold">
+                {candidate.skillsEvidencePct ?? 0}%
+              </div>
+            </div>
+            <div className="rounded-lg bg-gray-50 p-3 text-center">
+              <div className="text-xs text-gray-500">Education</div>
+              <div className="text-base font-semibold truncate">
+                {candidate.education || "—"}
+              </div>
+            </div>
+          </div>
+
+          {/* skills */}
+          <section className="mt-6">
+            <h3 className="text-sm font-semibold text-gray-900">Skills</h3>
+            <div className="mt-2 flex flex-wrap gap-1">
+              {(candidate.skills || []).length
+                ? (candidate.skills || []).map((s, i) => (
+                    <span
+                      key={i}
+                      className="text-[11px] px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-100"
+                    >
+                      {s}
+                    </span>
+                  ))
+                : <span className="text-sm text-gray-500">—</span>}
+            </div>
+          </section>
+
+          {/* strengths / gaps / mentoring */}
+          <div className="mt-6 grid gap-6 sm:grid-cols-3">
+            <section>
+              <h3 className="text-sm font-semibold text-green-700">Strengths</h3>
+              <ul className="mt-2 list-disc pl-5 text-sm text-gray-700 space-y-1">
+                {(candidate.strengths || []).length
+                  ? candidate.strengths!.map((s, i) => <li key={i}>{s}</li>)
+                  : <li>—</li>}
+              </ul>
+            </section>
+
+            <section>
+              <h3 className="text-sm font-semibold text-rose-700">Areas for Improvement</h3>
+              <ul className="mt-2 list-disc pl-5 text-sm text-gray-700 space-y-1">
+                {(candidate.weaknesses || []).length
+                  ? candidate.weaknesses!.map((s, i) => <li key={i}>{s}</li>)
+                  : <li>—</li>}
+              </ul>
+            </section>
+
+            <section>
+              <h3 className="text-sm font-semibold text-orange-700">Identified Gaps</h3>
+              <ul className="mt-2 list-disc pl-5 text-sm text-gray-700 space-y-1">
+                {(candidate.gaps || []).length
+                  ? candidate.gaps!.map((s, i) => <li key={i}>{s}</li>)
+                  : <li>—</li>}
+              </ul>
+            </section>
+          </div>
+
+          {/* interview questions */}
+          <section className="mt-6">
+            <h3 className="text-sm font-semibold text-gray-900">AI Interview Questions</h3>
+            <ol className="mt-2 list-decimal pl-5 text-sm text-gray-700 space-y-1">
+              {(candidate.questions || []).length
+                ? candidate.questions!.map((q, i) => <li key={i}>{q}</li>)
+                : <li>—</li>}
+            </ol>
+          </section>
+        </div>
+      </div>
+    </div>
   );
 }
