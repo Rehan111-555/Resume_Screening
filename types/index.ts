@@ -17,12 +17,14 @@ export interface Candidate {
   skills: string[];
   summary: string;
   matchScore: number;
-  skillsEvidencePct: number;   // NEW: deterministic skills/evidence percentage
+  skillsEvidencePct: number;
   strengths: string[];
   weaknesses: string[];
   gaps: string[];
   mentoringNeeds: string[];
-  questions: string[];         // NEW: per-candidate tailored questions
+  questions: string[];
+  domainMismatch?: boolean;   // NEW
+  domainNote?: string;        // NEW
 }
 
 export interface AnalysisResult {
