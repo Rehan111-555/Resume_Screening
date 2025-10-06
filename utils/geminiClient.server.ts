@@ -4,7 +4,7 @@ import {
   HarmCategory,
 } from "@google/generative-ai";
 
-/** ───────────────────────── Setup ───────────────────────── */
+/** ───── Setup ───── */
 const key = process.env.GOOGLE_AI_API_KEY;
 if (!key) throw new Error("Missing GOOGLE_AI_API_KEY in .env.local");
 const genAI = new GoogleGenerativeAI(key);
@@ -13,7 +13,7 @@ const MODELS = ["gemini-2.5-flash", "gemini-2.5-pro"] as const;
 type ModelId = (typeof MODELS)[number];
 let cachedModelId: ModelId | null = null;
 
-const TIMEOUT_MS = 55_000;
+const TIMEOUT_MS = 45_000;
 const MAX_RETRIES = 2;
 
 function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
@@ -31,7 +31,7 @@ async function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
       last = e; const msg = String(e?.message || e);
       const retriable = /fetch failed|timed out|ETIMEDOUT|429|quota|deadline/i.test(msg);
       if (!retriable || i === MAX_RETRIES) break;
-      await sleep(700 * Math.pow(2, i));
+      await sleep(600 * Math.pow(2, i));
     }
   }
   throw new Error(`${label}: ${String(last?.message || last)}`);
@@ -42,17 +42,17 @@ async function pickModel(): Promise<ModelId> {
     try {
       const m = genAI.getGenerativeModel({
         model: id,
-        generationConfig: { temperature: 0.1, maxOutputTokens: 8, responseMimeType: "text/plain" },
+        generationConfig: { temperature: 0, maxOutputTokens: 8, responseMimeType: "text/plain" },
       });
       await withRetry(() => m.generateContent("ping"), `probe ${id}`);
       cachedModelId = id;
       return id;
-    } catch { /* try next */ }
+    } catch { /* next */ }
   }
   throw new Error("No enabled Gemini model (enable gemini-2.5-flash or gemini-2.5-pro).");
 }
 
-/** ─────────────────────── Safety / JSON ─────────────────── */
+/** ───── Safety / JSON ───── */
 const safetySettings = [
   { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
   { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
@@ -61,12 +61,12 @@ const safetySettings = [
 ];
 const SYS = `You MUST return only valid JSON. No markdown. Use "", 0, false, or [] when unsure.`;
 
-async function jsonModel(temperature = 0) {
+async function jsonModel() {
   const id = await pickModel();
   return genAI.getGenerativeModel({
     model: id,
     systemInstruction: SYS,
-    generationConfig: { temperature, maxOutputTokens: 4096, responseMimeType: "application/json" },
+    generationConfig: { temperature: 0, maxOutputTokens: 4096, responseMimeType: "application/json" },
     safetySettings,
   });
 }
@@ -77,7 +77,7 @@ function j<T = any>(raw: string): T | null {
   return null;
 }
 
-/** ───────────────────── Resume profile LLM ───────────────── */
+/** ───── Resume profile ───── */
 export async function llmExtractProfile(resumeText: string) {
   const prompt = `
 Extract a clean JSON RESUME PROFILE from the following resume text. Be concise but complete.
@@ -100,14 +100,14 @@ Return ONLY JSON:
 }
 
 RESUME:
-"""${resumeText.slice(0, 16000)}"""
-`;
-  const model = await jsonModel(0.1);
+"""${resumeText.slice(0, 16000)}"`
+  `;
+  const model = await jsonModel();
   const res = await withRetry(() => model.generateContent(prompt), "extract-profile");
   return j<any>(res.response.text()) || {};
 }
 
-/** ───────────────────── Role-agnostic JD → keywords ───────────────────── */
+/** ───── JD → keywords (role-agnostic) ───── */
 export type JDKeywords = {
   must: { name: string; synonyms: string[] }[];
   nice: { name: string; synonyms: string[] }[];
@@ -121,13 +121,7 @@ const STOP_WORDS = new Set([
   "experience","years","team","work","ability","skills","plus","etc","including",
 ]);
 function tokenizeJD(jd: string): string[] {
-  return jd
-    .toLowerCase()
-    .replace(/[^a-z0-9\-\+\.#& ]+/g, " ")
-    .split(/\s+/)
-    .filter(Boolean)
-    .filter(t => !STOP_WORDS.has(t))
-    .slice(0, 4000);
+  return jd.toLowerCase().replace(/[^a-z0-9\-\+\.#& ]+/g, " ").split(/\s+/).filter(Boolean).filter(t => !STOP_WORDS.has(t)).slice(0, 4000);
 }
 function topTermsFromJD(jd: string, count = 16) {
   const tokens = tokenizeJD(jd);
@@ -138,31 +132,20 @@ function topTermsFromJD(jd: string, count = 16) {
     if (i + 1 < tokens.length) add(tokens[i] + " " + tokens[i + 1]);
     if (i + 2 < tokens.length) add(tokens[i] + " " + tokens[i + 2]);
   }
-  return Array.from(grams.entries())
-    .sort((a, b) => b[1] - a[1])
-    .map(([k]) => k)
-    .filter(k => k.length >= 3)
-    .slice(0, count);
+  return Array.from(grams.entries()).sort((a, b) => b[1] - a[1]).map(([k]) => k).filter(k => k.length >= 3).slice(0, count);
 }
 function localSynonyms(term: string): string[] {
   const t = term.toLowerCase().trim();
   const out = new Set<string>([t]);
-  out.add(t.replace(/\s+/g, ""));
-  out.add(t.replace(/\s+/g, "-"));
-  out.add(t.replace(/\s+/g, "."));
-  out.add(t.replace(/[-._]/g, " "));
-  if (t.endsWith("s")) out.add(t.slice(0, -1)); else out.add(t + "s");
-  out.add(t.replace(/javascript/i, "js"));
-  out.add(t.replace(/\bjs\b/i, "javascript"));
-  out.add(t.replace(/user experience/i, "ux"));
-  out.add(t.replace(/user interface/i, "ui"));
+  out.add(t.replace(/\s+/g, "")); out.add(t.replace(/\s+/g, "-")); out.add(t.replace(/\s+/g, "."));
+  out.add(t.replace(/[-._]/g, " ")); if (t.endsWith("s")) out.add(t.slice(0, -1)); else out.add(t + "s");
+  out.add(t.replace(/javascript/i, "js")); out.add(t.replace(/\bjs\b/i, "javascript"));
+  out.add(t.replace(/user experience/i, "ux")); out.add(t.replace(/user interface/i, "ui"));
   return Array.from(out).filter(Boolean);
 }
-
 export async function llmDeriveKeywords(jdText: string): Promise<JDKeywords> {
   const prompt = `
-From the JOB DESCRIPTION below, extract hiring themes/competencies as keywords with realistic synonyms
-that might appear on resumes. Do NOT assume any industry. Use only what the JD implies.
+From the JOB DESCRIPTION below, extract hiring themes/competencies as keywords with realistic synonyms only from the JD content.
 
 Return ONLY JSON:
 {
@@ -172,14 +155,14 @@ Return ONLY JSON:
 
 Rules:
 - 6–10 "must" items (core responsibilities, core competencies, critical tools/processes).
-- 4–8  "nice" items (nice-to-have tools, domains, certifications).
-- Synonyms: short realistic variants (abbreviations, spelling variants, common phrases). 2–6 per item.
-- No commentary. JSON only.
+- 4–8  "nice" items.
+- Synonyms: short realistic variants (abbreviations, spelling variants). 2–6 each.
+- JSON only.
 
-JOB DESCRIPTION:
-"""${jdText.slice(0, 12000)}"""
-`;
-  const model = await jsonModel(0);
+JD:
+"""${jdText.slice(0, 12000)}"`
+  ;
+  const model = await jsonModel();
   const res = await withRetry(() => model.generateContent(prompt), "jd-keywords");
   let out = j<JDKeywords>(res.response.text());
 
@@ -193,12 +176,8 @@ JOB DESCRIPTION:
   const norm = (s: string) => s.toLowerCase().trim();
   const uniq = (arr: string[]) => Array.from(new Set(arr.map(norm))).filter(Boolean);
 
-  out.must = (out.must || [])
-    .map(k => ({ name: norm(k.name || ""), synonyms: uniq([...(k.synonyms || []), ...localSynonyms(k.name || "")]) }))
-    .filter(k => k.name);
-  out.nice = (out.nice || [])
-    .map(k => ({ name: norm(k.name || ""), synonyms: uniq([...(k.synonyms || []), ...localSynonyms(k.name || "")]) }))
-    .filter(k => k.name);
+  out.must = (out.must || []).map(k => ({ name: norm(k.name || ""), synonyms: uniq([...(k.synonyms || []), ...localSynonyms(k.name || "")]) })).filter(k => k.name);
+  out.nice = (out.nice || []).map(k => ({ name: norm(k.name || ""), synonyms: uniq([...(k.synonyms || []), ...localSynonyms(k.name || "")]) })).filter(k => k.name);
 
   if (!out.must.length && !out.nice.length) {
     const terms = topTermsFromJD(jdText, 16);
@@ -208,22 +187,15 @@ JOB DESCRIPTION:
   return out;
 }
 
-/** ───────────── Heuristic fuzzy scoring over resume text ───────────── */
-export type HeuristicScore = {
-  coverage: number;    // 0..1
-  matched: string[];
-  missing: string[];   // must only
-};
-function norm(s: string): string {
-  return s.toLowerCase().replace(/[^a-z0-9\+\.\-#& ]+/g, " ").replace(/\s+/g, " ").trim();
-}
+/** ───── Heuristic fuzzy scoring ───── */
+export type HeuristicScore = { coverage: number; matched: string[]; missing: string[]; };
+function norm(s: string): string { return s.toLowerCase().replace(/[^a-z0-9\+\.\-#& ]+/g, " ").replace(/\s+/g, " ").trim(); }
 function fuzzyContains(text: string, phrase: string): boolean {
   const T = " " + norm(text) + " ";
   const p = norm(phrase);
   if (!p) return false;
   if (T.includes(` ${p} `)) return true;
   if (T.includes(p)) return true;
-  // simple char-tolerant (lev<=1)
   const L = p.length;
   for (let i = 0; i <= T.length - L; i++) {
     let d = 0; for (let j = 0; j < L && d <= 1; j++) if (T[i + j] !== p[j]) d++;
@@ -248,11 +220,10 @@ export function scoreHeuristically(resumeText: string, kw: JDKeywords): Heuristi
   return { coverage, matched: Array.from(matched), missing };
 }
 
-/** ───────────── LLM human rubric (kept, but blended) ───────────── */
+/** ───── LLM rubric (deterministic) ───── */
 export async function llmGradeCandidate(jdText: string, resumeText: string) {
   const prompt = `
-You are a senior recruiter assessing a candidate vs a JOB DESCRIPTION.
-Think step-by-step like a human reviewer. Use evidence from the resume.
+You are a senior recruiter assessing a candidate vs a JOB DESCRIPTION. Use only resume evidence.
 
 Return ONLY JSON:
 {
@@ -267,13 +238,13 @@ Return ONLY JSON:
   "questions": ["..."]      // 5–6 tailored questions for THIS candidate vs THIS JD
 }
 
-JOB DESCRIPTION:
+JD:
 """${jdText.slice(0, 10000)}"""
 
 RESUME:
-"""${resumeText.slice(0, 16000)}"""
-`;
-  const model = await jsonModel(0.2);
+"""${resumeText.slice(0, 16000)}"`
+  ;
+  const model = await jsonModel();
   const res = await withRetry(() => model.generateContent(prompt), "grade-candidate");
   const out = j<any>(res.response.text()) || {};
   out.score = Math.max(0, Math.min(100, Number(out.score || 0)));
