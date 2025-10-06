@@ -1,6 +1,3 @@
-// types/index.ts
-
-/** Job definition provided by the user */
 export interface JobRequirements {
   title: string;
   description: string;
@@ -8,7 +5,6 @@ export interface JobRequirements {
   educationLevel?: string;
 }
 
-/** Canonical Candidate shape used across API + UI */
 export interface Candidate {
   id: string;
 
@@ -20,20 +16,16 @@ export interface Candidate {
 
   // Role & background
   title: string;
-  yearsExperience: number;      // numeric years (can be fractional)
-  education: string;            // normalized label or raw string
+  yearsExperience: number;
+  education: string;
 
   // Evidence
-  skills: string[];             // tags
-  summary: string;              // brief professional summary
+  skills: string[];
+  summary: string;
 
-  // Scores (primary)
-  matchScore: number;           // 0-100 (overall)
-  skillsEvidencePct: number;    // 0-100 (deterministic coverage %)
-
-  // Scores (optional sub-scores if you compute them)
-  yearsScore?: number;          // optional
-  eduScore?: number;            // optional
+  // Scores
+  matchScore: number;        // 0-100
+  skillsEvidencePct: number; // 0-100
 
   // Narrative
   strengths: string[];
@@ -41,23 +33,29 @@ export interface Candidate {
   gaps: string[];
   mentoringNeeds: string[];
 
-  // Optional AI extras (guard in UI)
-  questions?: string[];         // tailored questions (omit when domainMismatch = true)
-  formatted?: string;           // preformatted “export” text (optional)
+  // Optional AI extras
+  questions?: string[];
+  formatted?: string;
 
-  // Domain control
-  domainMismatch: boolean;      // true => treat as out-of-domain (force 0, hide extras)
+  // Domain
+  domainMismatch: boolean;
 
-  // Optional fields from LLM rubric
+  // Optional rubric extras
   matchedSkills?: string[];
   missingSkills?: string[];
   educationSummary?: string;
 }
 
-/** API result payload */
 export interface AnalysisResult {
   candidates: Candidate[];
   errors?: { file: string; message: string }[];
   meta?: any;
-  jd?: any; // <-- allows your route to include { jd, candidates: ... }
+}
+
+export interface UploadedFile {
+  id: string;
+  name: string;
+  type: string;
+  size: number;
+  content: ArrayBuffer;
 }
