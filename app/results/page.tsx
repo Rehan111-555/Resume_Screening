@@ -11,11 +11,8 @@ export default function ResultsPage() {
   const { state } = useApp();
   const { analysisResult } = state;
 
-  const [selectedCandidate, setSelectedCandidate] = useState<Candidate | null>(
-    null
-  );
+  const [selectedCandidate, setSelectedCandidate] = useState<Candidate | null>(null);
 
-  // guard if user navigates here without results
   const candidates = useMemo<Candidate[]>(() => {
     return analysisResult?.candidates ?? [];
   }, [analysisResult]);
@@ -31,9 +28,7 @@ export default function ResultsPage() {
   return (
     <main className="mx-auto max-w-7xl px-4 py-8">
       <div className="mb-6">
-        <h1 className="text-3xl font-extrabold tracking-tight">
-          Results
-        </h1>
+        <h1 className="text-3xl font-extrabold tracking-tight">Results</h1>
         <p className="text-gray-600">
           {candidates.length
             ? `Analyzed ${candidates.length} candidate${candidates.length > 1 ? "s" : ""}.`
@@ -41,7 +36,6 @@ export default function ResultsPage() {
         </p>
       </div>
 
-      {/* Grid of candidate cards */}
       <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
         {candidates.map((c) => (
           <div
@@ -54,13 +48,11 @@ export default function ResultsPage() {
               if (e.key === "Enter" || e.key === " ") openDetail(c);
             }}
           >
-            {/* CandidateCard should only receive the `candidate` prop */}
             <CandidateCard candidate={c} />
           </div>
         ))}
       </div>
 
-      {/* Details modal (no `isOpen` prop; visibility controlled by `selectedCandidate`) */}
       {selectedCandidate && (
         <div
           className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-4"
