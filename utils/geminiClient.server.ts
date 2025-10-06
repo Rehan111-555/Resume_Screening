@@ -277,3 +277,35 @@ RESUME:
   if (!Array.isArray(out.weaknesses)) out.weaknesses = [];
   return out;
 }
+/** ───────────── Domain mismatch detection ─────────────
+ * We decide “domain match” by (a) JD tokens vs resume tokens overlap
+ * AND (b) heuristic skills coverage. If there’s almost no overlap AND
+ * coverage is very low, we mark as not matching the domain.
+ */
+export function detectDomainMismatch(
+  jdText: string,
+  resumeText: string,
+  hCoverage: number
+): boolean {
+  const takeWords = (s: string) =>
+    (s || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9+.#& ]+/g, " ")
+      .split(/\s+/)
+      .filter(Boolean);
+
+  const jdWords = new Set(takeWords(jdText));
+  const cvWords = new Set(takeWords(resumeText));
+
+  // Simple overlap measure (unique words)
+  let overlap = 0;
+  for (const w of cvWords) if (jdWords.has(w)) overlap++;
+
+  const overlapRatio = overlap / Math.max(1, jdWords.size);
+
+  // Thresholds are strict on purpose to avoid false zeros
+  // If extremely low JD↔CV overlap AND skills coverage is tiny → mismatch
+  return overlapRatio < 0.005 && hCoverage < 0.22;
+}
+
+
