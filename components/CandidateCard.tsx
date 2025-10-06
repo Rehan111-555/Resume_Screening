@@ -1,88 +1,85 @@
-// components/CandidateCard.tsx
-"use client";
+'use client';
 
-import type { Candidate } from "@/types";
-import { AlertTriangle, Briefcase, GraduationCap } from "lucide-react";
+import type { Candidate } from '@/types';
+import { GraduationCap, Briefcase, AlertTriangle } from 'lucide-react';
+import { formatExperience } from '@/utils/formatExperience';
 
-type Props = { candidate: Candidate };
+interface Props {
+  candidate: Candidate;
+  isSelected: boolean;
+  onClick: () => void;
+}
 
-export default function CandidateCard({ candidate }: Props) {
-  const score = Math.max(0, Math.min(100, Number(candidate.matchScore || 0)));
-
-  const scoreColor =
-    score >= 85
-      ? "text-green-700 bg-green-50 ring-1 ring-green-200"
-      : score >= 65
-      ? "text-yellow-700 bg-yellow-50 ring-1 ring-yellow-200"
-      : "text-red-700 bg-red-50 ring-1 ring-red-200";
+export default function CandidateCard({ candidate, isSelected, onClick }: Props) {
+  const getScoreColor = (score: number) => {
+    if (score >= 85) return 'text-green-700 bg-green-50 ring-1 ring-green-200';
+    if (score >= 65) return 'text-yellow-700 bg-yellow-50 ring-1 ring-yellow-200';
+    return 'text-red-700 bg-red-50 ring-1 ring-red-200';
+  };
 
   return (
-    <div className="h-full rounded-2xl border border-gray-200 bg-white p-4 transition-shadow hover:shadow-md">
-      {/* Header */}
-      <div className="mb-3 flex items-start justify-between gap-3">
+    <button
+      type="button"
+      onClick={onClick}
+      className={`w-full text-left border rounded-2xl p-4 transition-all hover:shadow-md focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
+        isSelected ? 'border-indigo-500 bg-indigo-50/40 shadow-md' : 'border-gray-200 bg-white'
+      }`}
+      aria-pressed={isSelected}
+    >
+      <div className="flex justify-between items-start mb-3">
         <div className="min-w-0">
-          <h3 className="truncate text-lg font-semibold text-gray-900" title={candidate.name}>
-            {candidate.name}
-          </h3>
-          <p className="line-clamp-2 text-sm text-gray-600" title={candidate.title}>
-            {candidate.title || "—"}
-          </p>
+          <h3 className="font-semibold text-lg text-gray-900 truncate">{candidate.name}</h3>
+          <p className="text-gray-600 truncate">{candidate.title}</p>
         </div>
-        <div
-          className={`shrink-0 rounded-full px-3 py-1 text-sm font-semibold ${scoreColor}`}
-          title={`Match score ${score}%`}
-        >
-          {candidate.domainMismatch ? "0% match" : `${score}% match`}
-        </div>
-      </div>
-
-      {/* Badges */}
-      <div className="mb-3 grid grid-cols-3 gap-2 text-xs">
-        <div className="rounded-md bg-blue-50 p-2 text-center text-blue-700">
-          <div className="font-bold">{candidate.domainMismatch ? 0 : candidate.skillsEvidencePct}%</div>
-          <div className="mt-0.5 text-[11px]">Skills & Evidence</div>
-        </div>
-        <div className="flex items-center justify-center rounded-md bg-emerald-50 p-2 text-emerald-700">
-          <Briefcase className="mr-1.5 h-4 w-4" />
-          {Number.isFinite(candidate.yearsExperience)
-            ? `${Math.max(0, candidate.yearsExperience).toFixed(1)}y`
-            : "—"}
-        </div>
-        <div className="flex items-center justify-center rounded-md bg-purple-50 p-2 text-purple-700">
-          <GraduationCap className="mr-1.5 h-4 w-4" />
-          <span className="truncate" title={candidate.education}>
-            {candidate.education || "—"}
-          </span>
+        <div className="flex items-center gap-2">
+          <div
+            className={`px-3 py-1 rounded-full font-semibold shrink-0 ${getScoreColor(candidate.matchScore)}`}
+            aria-label={`Match score ${candidate.matchScore} percent`}
+          >
+            {candidate.matchScore}% match
+          </div>
+          {candidate.domainMismatch && (
+            <div className="flex items-center text-xs px-2 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200">
+              <AlertTriangle className="h-3 w-3 mr-1" />
+              Domain not matching
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Skills chips */}
+      <div className="grid grid-cols-3 gap-2 mb-3 text-sm">
+        <div className="text-center p-2 rounded-lg bg-blue-50 text-blue-700">
+          <div className="font-bold">{candidate.skillsEvidencePct}%</div>
+          <div className="text-xs">Skills & Evidence</div>
+        </div>
+        <div className="flex items-center justify-center p-2 rounded-lg bg-emerald-50 text-emerald-700">
+          <Briefcase className="h-4 w-4 mr-2" />
+          <span className="truncate max-w-[8.5rem]">{formatExperience(candidate.yearsExperience)}</span>
+        </div>
+        <div className="flex items-center justify-center p-2 rounded-lg bg-purple-50 text-purple-700">
+          <GraduationCap className="h-4 w-4 mr-2" />
+          <span className="truncate max-w-[8.5rem]">{candidate.education || '—'}</span>
+        </div>
+      </div>
+
       <div className="mb-3">
-        <div className="flex max-h-16 flex-wrap gap-1 overflow-hidden">
-          {(candidate.skills || []).slice(0, 8).map((s, idx) => (
+        <div className="flex flex-wrap gap-1 max-h-[56px] overflow-hidden">
+          {candidate.skills.slice(0, 8).map((skill, index) => (
             <span
-              key={`${s}-${idx}`}
-              className="truncate rounded-full bg-indigo-50 px-2 py-0.5 text-[11px] text-indigo-800"
-              title={s}
+              key={`${skill}-${index}`}
+              className="px-2 py-1 bg-indigo-50 text-indigo-700 text-xs rounded-full truncate max-w-[10rem]"
+              title={skill}
             >
-              {s}
+              {skill}
             </span>
           ))}
-          {candidate.skills && candidate.skills.length > 8 && (
-            <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[11px] text-gray-600">
+          {candidate.skills.length > 8 && (
+            <span className="px-2 py-1 bg-gray-100 text-gray-600 text-xs rounded-full">
               +{candidate.skills.length - 8} more
             </span>
           )}
         </div>
       </div>
-
-      {/* Domain flag */}
-      {candidate.domainMismatch && (
-        <div className="flex items-center rounded-md border border-rose-200 bg-rose-50 px-2 py-1 text-[12px] text-rose-700">
-          <AlertTriangle className="mr-1 h-3.5 w-3.5" />
-          Domain not matching
-        </div>
-      )}
-    </div>
+    </button>
   );
 }
