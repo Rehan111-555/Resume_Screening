@@ -1,52 +1,57 @@
+// types/index.ts
+
 export interface JobRequirements {
   title: string;
   description: string;
   minYearsExperience?: number;
-  educationLevel?: string;
+  educationLevel?: string; // "PhD" | "Master" | "Bachelor" | "Intermediate/High School"
 }
 
 export interface Candidate {
+  // profile basics
   id: string;
   name: string;
   email: string;
   phone: string;
   location: string;
   title: string;
-  yearsExperience: number;
-  education: string;
-  skills: string[];
   summary: string;
+  education: string;
+  yearsExperience: number; // total years (can be fractional, e.g. 2.5)
+  skills: string[];
+  tools: string[];
+  industryDomains: string[];
+
+  // derived UI bits
+  topSkills?: string[];
+  badges?: string[];
 
   // scoring
-  matchScore: number;
-  skillsEvidencePct: number;
+  matchScore: number;          // 0–100
+  skillsEvidencePct: number;   // 0–100
 
-  // analysis
-  strengths: string[];
-  weaknesses: string[];
-  gaps: string[];
-  mentoringNeeds: string[];
+  // domain gate
+  domainMismatch: boolean;     // true => hide rich details
 
-  // generated Qs (empty when domainMismatch === true)
-  questions: string[];
+  // LLM outputs (hidden when domainMismatch === true)
+  matchedSkills?: string[];
+  missingSkills?: string[];
+  strengths?: string[];
+  weaknesses?: string[];
+  educationSummary?: string;
+  questions?: string[];
 
-  // domain
-  domainMismatch?: boolean;
-
-  // preformatted block for clipboard
+  // formatted markdown (for copy)
   formatted?: string;
 }
 
-export interface AnalysisResult {
+export interface AnalyzeResponse {
   candidates: Candidate[];
-  errors?: { file: string; message: string }[];
-  meta?: any;
 }
 
-export interface UploadedFile {
+export interface UploadItem {
   id: string;
-  name: string;
-  type: string;
-  size: number;
-  content: ArrayBuffer;
+  filename: string;
+  mime: string;
+  buffer: Buffer;
 }
