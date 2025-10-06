@@ -6,133 +6,18 @@ import {
   llmDeriveKeywords,
   scoreHeuristically,
   llmGradeCandidate,
-  JDKeywords,
   mapEduLevel,
   eduFit,
   clamp01,
+  estimateExperienceYears,
+  inferDomainTokensFromJD,
+  resumeMatchesDomain,
+  type JDKeywords,
 } from "@/utils/geminiClient.server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** ───────── file → plain text ───────── */
-async function extractTextFromFile(file: File): Promise<string> {
-  const name = (file.name || "").toLowerCase();
-  const buf = Buffer.from(await file.arrayBuffer());
-
-  if (name.endsWith(".pdf")) {
-    const pdf = (await import("pdf-parse")).default;
-    const res = await pdf(buf);
-    return res.text || "";
-  }
-
-  if (name.endsWith(".docx") || name.endsWith(".doc")) {
-    const mammoth = await import("mammoth");
-    const { value } = await mammoth.extractRawText({ buffer: buf });
-    return value || "";
-  }
-
-  if (name.endsWith(".html") || name.endsWith(".htm")) {
-    const html = buf.toString("utf8");
-    return convert(html, { preserveNewlines: true, wordwrap: false }) || "";
-  }
-
-  // plain text fallback
-  return buf.toString("utf8");
-}
-
-/** ───────── minimal fuzzy contains (no hardcoding) ───────── */
-function norm(s: string): string {
-  return (s || "").toLowerCase().replace(/[^a-z0-9\+\.\-#& ]+/g, " ").replace(/\s+/g, " ").trim();
-}
-function fuzzyContains(longText: string, phrase: string): boolean {
-  const T = " " + norm(longText) + " ";
-  const p = norm(phrase);
-  if (!p) return false;
-  if (T.includes(` ${p} `)) return true;
-  if (T.includes(p)) return true;
-  // small char tolerance (lev<=1)
-  const L = p.length;
-  for (let i = 0; i <= T.length - L; i++) {
-    let d = 0;
-    for (let j = 0; j < L && d <= 1; j++) if (T[i + j] !== p[j]) d++;
-    if (d <= 1) return true;
-  }
-  return false;
-}
-
-/** ───────── automatic domain anchors from JD ───────── */
-function buildJdAnchors(keywords: JDKeywords): string[] {
-  const must = Array.isArray(keywords?.must) ? keywords.must : [];
-  const names = must.map((m) => (m?.name || "").trim()).filter(Boolean);
-  return Array.from(new Set(names)).slice(0, 20);
-}
-function hitsFromResume(text: string, keywords: JDKeywords, anchors: string[]): string[] {
-  const must = Array.isArray(keywords?.must) ? keywords.must : [];
-  const byName = new Map<string, string[]>();
-  for (const item of must) {
-    const name = (item?.name || "").trim();
-    if (!name) continue;
-    byName.set(
-      name,
-      Array.from(new Set([name, ...(item?.synonyms || [])].map((s) => (s || "").trim()).filter(Boolean)))
-    );
-  }
-  const found = new Set<string>();
-  for (const anchor of anchors) {
-    const syns = byName.get(anchor) || [anchor];
-    if (syns.some((s) => fuzzyContains(text, s))) found.add(anchor);
-  }
-  return Array.from(found);
-}
-
-/** ───────── pretty years ───────── */
-function formatYears(n: number): string {
-  const y = Math.max(0, Number.isFinite(n) ? n : 0);
-  if (y < 1) {
-    const m = Math.round(y * 12);
-    return `${m} month${m === 1 ? "" : "s"}`;
-  }
-  const whole = Math.floor(y);
-  const rem = Math.round((y - whole) * 12);
-  return rem > 0 ? `${whole} yr ${rem} mo` : `${whole} year${whole === 1 ? "" : "s"}`;
-}
-
-/** ───────── formatted block (your exact spec) ───────── */
-function buildFormattedBlock(c: {
-  name: string; email: string; phone: string; location: string; summary: string;
-  matchScore: number; yearsExperience: number; skillsEvidencePct: number; education: string;
-  skills: string[]; questions: string[];
-  strengths: string[]; weaknesses: string[]; gaps: string[]; mentoringNeeds: string[];
-}): string {
-  const lines: string[] = [];
-  const esc = (s: string) => (s || "").replace(/\s+/g, " ").trim();
-
-  lines.push(`## Candidate Details — **${esc(c.name)}**\n`);
-  lines.push(`**Personal Information**\n`);
-  lines.push(`* Email: ${esc(c.email) || "Not specified"}`);
-  lines.push(`* Phone: ${esc(c.phone) || "Not specified"}`);
-  lines.push(`* Location: ${esc(c.location) || "Not specified"}\n`);
-  lines.push(`**Professional Summary**\n${esc(c.summary) || "—"}\n`);
-  lines.push(`**Match Breakdown**\n`);
-  lines.push(`* **Overall Match:** ${c.matchScore}%`);
-  lines.push(`* **Experience:** ${formatYears(c.yearsExperience)}`);
-  lines.push(`* **Skills & Evidence:** ${c.skillsEvidencePct}%`);
-  lines.push(`* **Education:** ${esc(c.education) || "—"}\n`);
-  lines.push(`**Skills**\n${(c.skills || []).slice(0, 30).join(", ") || "—"}\n`);
-  if ((c.questions || []).length) {
-    lines.push(`**AI Interview Questions**\n${c.questions.map((q,i)=>`${i+1}. ${esc(q)}`).join(" ")}`);
-  } else {
-    lines.push(`**AI Interview Questions**\n—`);
-  }
-  lines.push(`\n**Strengths**\n${(c.strengths || []).map(s=>`* ${esc(s)}`).join("\n") || "—"}\n`);
-  lines.push(`**Areas for Improvement**\n${(c.weaknesses || []).map(s=>`* ${esc(s)}`).join("\n") || "—"}\n`);
-  lines.push(`**Identified Gaps (vs JD)**\n${(c.gaps || []).map(s=>`* ${esc(s)}`).join("\n") || "—"}\n`);
-  lines.push(`**Mentoring Needs**\n${(c.mentoringNeeds || []).map(s=>`* ${esc(s)}`).join("\n") || "—"}\n`);
-  return lines.join("\n");
-}
-
-/** ───────── limiter ───────── */
 function createLimiter(maxConcurrent: number) {
   let active = 0;
   const queue: Array<() => void> = [];
@@ -143,14 +28,76 @@ function createLimiter(maxConcurrent: number) {
   };
 }
 
-/** ───────── local route types ───────── */
+/* ---------- file → text (multi-format) ---------- */
+async function extractTextFromFile(file: File): Promise<string> {
+  const name = (file.name || "").toLowerCase();
+  const buf = Buffer.from(await file.arrayBuffer());
+
+  if (name.endsWith(".pdf")) {
+    const pdf = (await import("pdf-parse")).default;
+    const res = await pdf(buf);
+    return res.text || "";
+  }
+  if (name.endsWith(".docx") || name.endsWith(".doc")) {
+    const mammoth = await import("mammoth");
+    const { value } = await mammoth.extractRawText({ buffer: buf });
+    return value || "";
+  }
+  if (name.endsWith(".html") || name.endsWith(".htm")) {
+    return convert(buf.toString("utf8"));
+  }
+  return buf.toString("utf8");
+}
+
+/* ---------- helpers ---------- */
+const JUNK_GAP_WORDS = new Set([
+  "best","practices","practice","proactive","strong","experience","understanding","customizing",
+  "development","developer","process","processes"
+]);
+const ONLY_ALPHA = /[a-z]/i;
+
+function asSkillLike(s: string): boolean {
+  const t = (s || "").toLowerCase().trim();
+  if (!t || t.length < 3) return false;
+  if (!ONLY_ALPHA.test(t)) return false;
+  if (JUNK_GAP_WORDS.has(t)) return false;
+  return true;
+}
+
 type JobRequirements = {
   title: string;
   description: string;
   minYearsExperience?: number;
   educationLevel?: string;
 };
+type Candidate = {
+  id: string;
+  name: string;
+  email: string;
+  phone: string;
+  location: string;
+  title: string;
+  yearsExperience: number;
+  education: string;
+  skills: string[];
+  summary: string;
+  matchScore: number;
+  skillsEvidencePct: number;
+  strengths: string[];
+  weaknesses: string[];
+  gaps: string[];
+  mentoringNeeds: string[];
+  questions: string[];
+  domainMismatch?: boolean;
+  formatted?: string;
+};
+type AnalysisResult = {
+  candidates: Candidate[];
+  errors?: { file: string; message: string }[];
+  meta?: { keywords: JDKeywords; domainTokens: string[] };
+};
 
+/* ---------- route ---------- */
 export async function POST(req: NextRequest) {
   try {
     const form = await req.formData();
@@ -170,34 +117,41 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Limit 100 resumes per batch." }, { status: 400 });
     }
 
-    // JD keywords (auto, no hardcoding)
-    const keywords = await llmDeriveKeywords(JD);
-    const jdAnchors = buildJdAnchors(keywords);
+    // Derive JD keywords + infer domain tokens automatically (no hardcoding)
+    const [keywords, domainTokens] = await Promise.all([
+      llmDeriveKeywords(JD),
+      Promise.resolve(inferDomainTokensFromJD(job.title || "", job.description || "")),
+    ]);
 
     const limit = createLimiter(8);
     const errors: { file: string; message: string }[] = [];
-    const candidates: any[] = [];
+    const candidates: Candidate[] = [];
 
     await Promise.all(
       resumeFiles.map((f) =>
         limit(async () => {
           try {
             const text = await extractTextFromFile(f);
-            if (!text.trim()) throw new Error("Empty/unsupported file content.");
+            const isDomain = resumeMatchesDomain(text, domainTokens);
 
-            const [profile, llmRubric] = await Promise.all([
+            // short-circuit: if domain mismatch => we STILL parse but score is 0 and hide extras.
+            const [profile, rubric] = await Promise.all([
               llmExtractProfile(text),
-              llmGradeCandidate(JD, text),
+              isDomain ? llmGradeCandidate(JD, text) : Promise.resolve<any>({ score: 0 })
             ]);
 
-            // Heuristic coverage (deterministic)
+            // Evidence (deterministic)
             const h = scoreHeuristically(text, keywords);
             const skillsEvidencePct = Math.round(h.coverage * 100);
 
-            // Experience
-            const years = Number(
-              (profile?.yearsExperience || llmRubric?.yearsExperienceEstimate || 0).toFixed(2)
+            // Experience: prefer profile → rubric → regex dates
+            let years = Number(
+              (profile?.yearsExperience || rubric?.yearsExperienceEstimate || 0)
             );
+            if (!Number.isFinite(years) || years <= 0) {
+              years = estimateExperienceYears(text);
+            }
+            years = Number((years || 0).toFixed(2));
 
             // Education
             const eduStr =
@@ -205,52 +159,88 @@ export async function POST(req: NextRequest) {
                 ? [profile.education[0]?.degree, profile.education[0]?.field, profile.education[0]?.institution]
                     .filter(Boolean)
                     .join(", ")
-                : (llmRubric?.educationSummary || "");
+                : (rubric?.educationSummary || "");
             const eduLabel = mapEduLevel(eduStr);
             const eduScore = eduFit(job.educationLevel, eduLabel);
 
-            // Base score (before gating)
-            const expFit = clamp01(job.minYearsExperience ? years / job.minYearsExperience : 1);
-            const llmNorm = (llmRubric?.score || 0) / 100;
-            const baseOverall = 0.55 * h.coverage + 0.25 * expFit + 0.1 * eduScore + 0.1 * llmNorm;
-            let matchScore = Math.round(100 * clamp01(baseOverall));
+            // Overall (if domain mismatch => 0)
+            const expFit = clamp01(
+              job.minYearsExperience ? (years / Math.max(0.1, job.minYearsExperience)) : 1
+            );
+            const llmNorm = (rubric?.score || 0) / 100;
+            let overall = 0.55 * h.coverage + 0.25 * expFit + 0.10 * eduScore + 0.10 * llmNorm;
+            overall = isDomain ? clamp01(overall) : 0;
+            const matchScore = Math.round(100 * overall);
 
-            // ───── Automatic "domain" gate from JD anchors
-            const resumeHits = hitsFromResume(text, keywords, jdAnchors);
-            const minNeeded = Math.max(1, Math.ceil((keywords.must?.length || 0) * 0.15));
-            let domainMatch = true;
-            let domainNote = "";
-            if ((keywords.must?.length || 0) > 0 && resumeHits.length < minNeeded) {
-              domainMatch = false;
-              matchScore = 0;
-              domainNote = "Domain not matching";
-            }
-
-            // Skills merged (de-duped)
+            // Skills (merged)
             const mergedSkills = Array.from(
               new Set<string>([
                 ...(Array.isArray(profile?.skills) ? profile.skills : []).map(String),
-                ...(Array.isArray(llmRubric?.matchedSkills) ? llmRubric.matchedSkills : []).map(String),
+                ...(Array.isArray(rubric?.matchedSkills) ? rubric.matchedSkills : []).map(String),
                 ...h.matched,
-              ].filter(Boolean).map((s) => s.trim()))
+              ].filter(Boolean))
             );
 
-            // Narrative
-            const strengths = [
-              ...(Array.isArray(llmRubric?.strengths) ? llmRubric.strengths : []),
-              ...(h.matched.length ? [`Strong evidence for: ${h.matched.slice(0, 10).join(", ")}`] : []),
-            ];
-            const weaknesses = [
-              ...(Array.isArray(llmRubric?.weaknesses) ? llmRubric.weaknesses : []),
-              ...(h.missing.length ? [`Missing vs JD: ${h.missing.slice(0, 8).join(", ")}`] : []),
-            ];
+            // Narrative (strip junk)
+            const strengths = (Array.isArray(rubric?.strengths) ? rubric.strengths : [])
+              .filter((x: string) => x && x.length <= 240);
+            const missing = h.missing.filter(asSkillLike);
+            const weaknesses = (Array.isArray(rubric?.weaknesses) ? rubric.weaknesses : [])
+              .concat(missing.length ? [`Missing vs JD: ${missing.slice(0, 8).join(", ")}`] : [])
+              .filter(Boolean);
 
-            const gaps = (h.missing || []).map((m: string) => `Skill gap: ${m}`);
-            const mentoring = (h.missing || []).slice(0, 3).map((m: string) => `Mentorship in ${m}`);
+            const questions = (isDomain && matchScore > 0)
+              ? (Array.isArray(rubric?.questions) ? rubric.questions : [])
+              : [];
 
-            const candidateCore = {
+            const nameGuess = profile?.name || f.name.replace(/\.(pdf|docx|doc|txt|html?)$/i, "");
+
+            // preformatted MD block in your exact layout
+            const formatted = `
+Candidate Details — **${nameGuess}**
+
+Personal Information
+
+Email: ${profile?.email || ""}
+Phone: ${profile?.phone || ""}
+Location: ${profile?.location || ""}
+
+Professional Summary
+${(profile?.summary || text.slice(0, 400).replace(/\s+/g, " ")).trim()}
+
+Match Breakdown
+
+Overall Match: ${matchScore}%
+Experience: ${years} years
+Skills & Evidence: ${skillsEvidencePct}%
+Education: ${eduLabel || "N/A"}
+
+Skills
+${mergedSkills.slice(0, 30).join(", ")}
+
+AI Interview Questions
+${questions.map((q: string) => `• ${q}`).join("\n")}
+
+Strengths
+${strengths.map((s: string) => `• ${s}`).join("\n")}
+
+Areas for Improvement
+${weaknesses.map((w: string) => `• ${w}`).join("\n")}
+
+Identified Gaps (vs JD)
+${missing.map((m: string) => `Skill gap: ${m}`).join("\n")}
+
+Mentoring Needs
+${missing.slice(0, 3).map((m: string) => `• Mentorship in ${m}`).join("\n")}
+
+What I’ll do automatically
+Parse the resume and JD, align must-have vs nice-to-have skills.
+Score Overall Match (skills 65%, experience 15%, education 10%, domain/impact 10%)
+`.trim();
+
+            candidates.push({
               id: crypto.randomUUID(),
-              name: profile?.name || f.name.replace(/\.(pdf|docx|doc|txt|html?)$/i, ""),
+              name: nameGuess,
               email: profile?.email || "",
               phone: profile?.phone || "",
               location: profile?.location || "",
@@ -263,18 +253,12 @@ export async function POST(req: NextRequest) {
               skillsEvidencePct,
               strengths,
               weaknesses,
-              gaps,
-              mentoringNeeds: mentoring,
-              questions: Array.isArray(llmRubric?.questions) ? llmRubric.questions : [],
-              domainMatch,
-              domainNote,
-              domainFromJD: jdAnchors,
-              domainFromResume: resumeHits,
-            };
-
-            const formatted = buildFormattedBlock(candidateCore);
-
-            candidates.push({ ...candidateCore, formatted });
+              gaps: missing.map((m: string) => `Skill gap: ${m}`),
+              mentoringNeeds: missing.slice(0, 3).map((m: string) => `Mentorship in ${m}`),
+              questions,
+              domainMismatch: !isDomain,
+              formatted,
+            });
           } catch (e: any) {
             errors.push({ file: f.name, message: String(e?.message || e) });
           }
@@ -284,7 +268,13 @@ export async function POST(req: NextRequest) {
 
     candidates.sort((a, b) => (b.matchScore || 0) - (a.matchScore || 0));
 
-    return NextResponse.json({ candidates, errors, meta: { keywords } });
+    const result: AnalysisResult = {
+      candidates,
+      errors,
+      meta: { keywords, domainTokens },
+    };
+
+    return NextResponse.json(result);
   } catch (err: any) {
     return NextResponse.json(
       { error: "Resume analysis failed", details: String(err?.message || err) },
