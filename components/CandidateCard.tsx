@@ -2,7 +2,11 @@
 
 import { AlertTriangle } from "lucide-react";
 import type { Candidate } from "@/types";
-import clsx from "clsx";
+
+/** simple class combiner to replace `clsx` */
+function cx(...parts: Array<string | false | null | undefined>) {
+  return parts.filter(Boolean).join(" ");
+}
 
 export default function CandidateCard({ candidate }: { candidate: Candidate }) {
   return (
@@ -17,13 +21,15 @@ export default function CandidateCard({ candidate }: { candidate: Candidate }) {
 
         <div className="ml-3 flex flex-col items-end">
           <div
-            className={clsx(
+            className={cx(
               "text-xs px-2 py-0.5 rounded-full border",
-              candidate.matchScore >= 70
-                ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                : candidate.matchScore >= 40
-                ? "bg-amber-50 text-amber-700 border-amber-200"
-                : "bg-rose-50 text-rose-700 border-rose-200"
+              candidate.matchScore >= 70 &&
+                "bg-emerald-50 text-emerald-700 border-emerald-200",
+              candidate.matchScore >= 40 &&
+                candidate.matchScore < 70 &&
+                "bg-amber-50 text-amber-700 border-amber-200",
+              candidate.matchScore < 40 &&
+                "bg-rose-50 text-rose-700 border-rose-200"
             )}
           >
             {candidate.matchScore}% match
@@ -41,12 +47,18 @@ export default function CandidateCard({ candidate }: { candidate: Candidate }) {
       <div className="mt-3 grid grid-cols-3 gap-2">
         <div className="rounded-lg bg-gray-50 p-2 text-center">
           <div className="text-xs text-gray-500">Skills & Evidence</div>
-          <div className="font-semibold text-sm">{candidate.skillsEvidencePct || 0}%</div>
+          <div className="font-semibold text-sm">
+            {candidate.skillsEvidencePct || 0}%
+          </div>
         </div>
         <div className="rounded-lg bg-gray-50 p-2 text-center">
           <div className="text-xs text-gray-500">Experience</div>
           <div className="font-semibold text-sm">
-            {candidate.yearsExperience > 0 ? `${candidate.yearsExperience} ${candidate.yearsExperience === 1 ? "year" : "years"}` : "0 months"}
+            {candidate.yearsExperience > 0
+              ? `${candidate.yearsExperience} ${
+                  candidate.yearsExperience === 1 ? "year" : "years"
+                }`
+              : "0 months"}
           </div>
         </div>
         <div className="rounded-lg bg-gray-50 p-2 text-center">
