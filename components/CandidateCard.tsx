@@ -1,7 +1,7 @@
 'use client';
 
 import type { Candidate } from '@/types';
-import { GraduationCap, Briefcase, HelpCircle } from 'lucide-react';
+import { GraduationCap, Briefcase, HelpCircle, AlertTriangle } from 'lucide-react';
 import { formatExperience } from '@/utils/formatExperience';
 
 interface CandidateCardProps {
@@ -10,11 +10,7 @@ interface CandidateCardProps {
   onClick: () => void;
 }
 
-export default function CandidateCard({
-  candidate,
-  isSelected,
-  onClick,
-}: CandidateCardProps) {
+export default function CandidateCard({ candidate, isSelected, onClick }: CandidateCardProps) {
   const getScoreColor = (score: number) => {
     if (score >= 85) return 'text-green-700 bg-green-50 ring-1 ring-green-200';
     if (score >= 65) return 'text-yellow-700 bg-yellow-50 ring-1 ring-yellow-200';
@@ -35,13 +31,21 @@ export default function CandidateCard({
           <h3 className="font-semibold text-lg text-gray-900 truncate">{candidate.name}</h3>
           <p className="text-gray-600 truncate">{candidate.title}</p>
         </div>
-        <div
-          className={`px-3 py-1 rounded-full font-semibold shrink-0 ${getScoreColor(
-            candidate.matchScore
-          )}`}
-          aria-label={`Match score ${candidate.matchScore} percent`}
-        >
-          {candidate.matchScore}% match
+
+        <div className="flex items-center gap-2">
+          {candidate.domainMismatch && (
+            <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold bg-rose-50 text-rose-700 ring-1 ring-rose-200">
+              <AlertTriangle className="h-3 w-3 mr-1" /> Domain not matching
+            </span>
+          )}
+          <div
+            className={`px-3 py-1 rounded-full font-semibold shrink-0 ${getScoreColor(
+              candidate.matchScore
+            )}`}
+            aria-label={`Match score ${candidate.matchScore} percent`}
+          >
+            {candidate.matchScore}% match
+          </div>
         </div>
       </div>
 
