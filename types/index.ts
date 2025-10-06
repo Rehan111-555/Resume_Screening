@@ -13,43 +13,48 @@ export interface UploadedFile {
   type: string;
   size: number;
 
-  /**
-   * The raw content if you stored bytes yourself.
-   * Your UploadBox may put a Blob OR ArrayBuffer here.
-   * It’s optional because some implementations keep the native File instead.
-   */
+  /** If you stored raw bytes yourself */
   content?: Blob | ArrayBuffer;
 
-  /**
-   * Optional native File. If your UploadBox keeps the File,
-   * we’ll use it directly when posting to the API.
-   */
+  /** If you stored the native File */
   file?: File;
 }
 
 export interface Candidate {
   id: string;
+
+  // basics parsed from resume
   name: string;
   email: string;
   phone: string;
   location: string;
   title: string;
-  yearsExperience: number;
-  education: string;
-  skills: string[];
   summary: string;
+  skills: string[];
+  education: string;
+  yearsExperience: number;
 
-  // scoring
+  // computed scores for list cards
   matchScore: number;
   skillsEvidencePct: number;
   yearsScore: number;
   eduScore: number;
 
-  // domain flags
+  // domain flag used for badges/filters
   domainMismatch?: boolean;
 
-  // UI
+  // preformatted, copyable detail text (optional)
   formatted?: string;
+
+  // OPTIONAL fields the API may add for the detail modal
+  questions?: string[];
+  strengths?: string[];
+  weaknesses?: string[];
+  gaps?: string[];
+  mentoringNeeds?: string[];
+  matchedSkills?: string[];
+  missingSkills?: string[];
+  educationSummary?: string;
 }
 
 export interface AnalysisResult {
