@@ -12,7 +12,8 @@ export function exportToCSV(candidates: Candidate[]) {
     'Education',
     'Skills',
     'Strengths',
-    'Weaknesses'
+    'Weaknesses',
+    'DomainMismatch'
   ];
 
   const csvData = candidates.map((candidate, index) => [
@@ -25,14 +26,14 @@ export function exportToCSV(candidates: Candidate[]) {
     candidate.yearsExperience,
     candidate.education,
     candidate.skills.join('; '),
-    candidate.strengths.join('; '),
-    candidate.weaknesses.join('; ')
+    (candidate.strengths || []).join('; '),
+    (candidate.weaknesses || []).join('; '),
+    candidate.domainMismatch ? "Yes" : "No"
   ]);
 
-  const csvContent = [
-    headers,
-    ...csvData
-  ].map(row => row.map(field => `"${field}"`).join(',')).join('\n');
+  const csvContent = [headers, ...csvData]
+    .map(row => row.map(field => `"${String(field).replace(/"/g, '""')}"`).join(','))
+    .join('\n');
 
   const blob = new Blob([csvContent], { type: 'text/csv' });
   const url = window.URL.createObjectURL(blob);
