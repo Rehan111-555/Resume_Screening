@@ -1,9 +1,8 @@
-// components/CandidateCard.tsx
-"use client";
+'use client';
 
-import type { Candidate } from "@/types";
-import { GraduationCap, Briefcase, MessageSquare } from "lucide-react";
-import { formatExperience } from "@/utils/formatExperience";
+import type { Candidate } from '@/types';
+import { GraduationCap, Briefcase, HelpCircle } from 'lucide-react';
+import { formatExperience } from '@/utils/formatExperience';
 
 interface CandidateCardProps {
   candidate: Candidate;
@@ -11,15 +10,23 @@ interface CandidateCardProps {
   onClick: () => void;
 }
 
-export default function CandidateCard({ candidate, isSelected, onClick }: CandidateCardProps) {
-  const badge = scoreBadge(candidate.matchScore);
+export default function CandidateCard({
+  candidate,
+  isSelected,
+  onClick,
+}: CandidateCardProps) {
+  const getScoreColor = (score: number) => {
+    if (score >= 85) return 'text-green-700 bg-green-50 ring-1 ring-green-200';
+    if (score >= 65) return 'text-yellow-700 bg-yellow-50 ring-1 ring-yellow-200';
+    return 'text-red-700 bg-red-50 ring-1 ring-red-200';
+  };
 
   return (
     <button
       type="button"
       onClick={onClick}
-      className={`w-full text-left border rounded-2xl p-4 transition-all hover:shadow-md ${
-        isSelected ? "border-indigo-500 bg-indigo-50" : "border-gray-200 bg-white"
+      className={`w-full text-left border rounded-2xl p-4 transition-all hover:shadow-md focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
+        isSelected ? 'border-indigo-500 bg-indigo-50/40 shadow-md' : 'border-gray-200 bg-white'
       }`}
       aria-pressed={isSelected}
     >
@@ -28,19 +35,28 @@ export default function CandidateCard({ candidate, isSelected, onClick }: Candid
           <h3 className="font-semibold text-lg text-gray-900 truncate">{candidate.name}</h3>
           <p className="text-gray-600 truncate">{candidate.title}</p>
         </div>
-        <div className={`px-3 py-1 rounded-full font-semibold shrink-0 ${badge.bg} ${badge.text}`}>
+        <div
+          className={`px-3 py-1 rounded-full font-semibold shrink-0 ${getScoreColor(
+            candidate.matchScore
+          )}`}
+          aria-label={`Match score ${candidate.matchScore} percent`}
+        >
           {candidate.matchScore}% match
         </div>
       </div>
 
-      <div className="space-y-2 mb-3 text-sm text-gray-600">
-        <div className="flex items-center">
-          <Briefcase className="h-4 w-4 mr-2 text-indigo-500" />
-          {formatExperience(candidate.yearsExperience)} experience
+      <div className="grid grid-cols-3 gap-2 mb-3 text-sm">
+        <div className="text-center p-2 rounded-lg bg-blue-50 text-blue-700">
+          <div className="font-bold">{candidate.skillsEvidencePct}%</div>
+          <div className="text-xs">Skills & Evidence</div>
         </div>
-        <div className="flex items-center">
-          <GraduationCap className="h-4 w-4 mr-2 text-rose-500" />
-          {candidate.education || "—"}
+        <div className="flex items-center justify-center p-2 rounded-lg bg-emerald-50 text-emerald-700">
+          <Briefcase className="h-4 w-4 mr-2" />
+          {formatExperience(candidate.yearsExperience)}
+        </div>
+        <div className="flex items-center justify-center p-2 rounded-lg bg-purple-50 text-purple-700">
+          <GraduationCap className="h-4 w-4 mr-2" />
+          {candidate.education || '—'}
         </div>
       </div>
 
@@ -49,29 +65,23 @@ export default function CandidateCard({ candidate, isSelected, onClick }: Candid
           {candidate.skills.slice(0, 6).map((skill, index) => (
             <span
               key={`${skill}-${index}`}
-              className="px-2 py-1 bg-gradient-to-r from-indigo-50 to-white border text-indigo-700 text-xs rounded"
+              className="px-2 py-1 bg-indigo-50 text-indigo-700 text-xs rounded-full"
             >
               {skill}
             </span>
           ))}
           {candidate.skills.length > 6 && (
-            <span className="px-2 py-1 bg-gray-100 text-gray-600 text-xs rounded">+{candidate.skills.length - 6} more</span>
+            <span className="px-2 py-1 bg-gray-100 text-gray-600 text-xs rounded-full">
+              +{candidate.skills.length - 6} more
+            </span>
           )}
         </div>
       </div>
 
-      {candidate.questions && candidate.questions.length > 0 && (
-        <div className="flex items-center text-xs text-gray-500">
-          <MessageSquare className="h-3.5 w-3.5 mr-1.5" />
-          Tailored interview questions available
-        </div>
-      )}
+      <div className="flex items-center text-indigo-600 text-sm">
+        <HelpCircle className="h-4 w-4 mr-1" />
+        Tailored interview questions in details
+      </div>
     </button>
   );
-}
-
-function scoreBadge(score: number) {
-  if (score >= 80) return { bg: "bg-green-50", text: "text-green-700" };
-  if (score >= 60) return { bg: "bg-yellow-50", text: "text-yellow-700" };
-  return { bg: "bg-red-50", text: "text-red-700" };
 }
