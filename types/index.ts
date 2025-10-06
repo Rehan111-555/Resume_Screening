@@ -16,19 +16,22 @@ export interface Candidate {
   education: string;
   skills: string[];
   summary: string;
+
+  // scoring
   matchScore: number;
   skillsEvidencePct: number;
+
+  // narrative
   strengths: string[];
   weaknesses: string[];
   gaps: string[];
   mentoringNeeds: string[];
   questions: string[];
 
-  /** NEW: force-zero scoring when domain doesn’t match the JD */
-  domainNotMatching?: boolean;
-
-  /** NEW: your exact, copy-ready write-up in the format you want */
-  formatted?: string;
+  // new fields
+  domain: string;            // e.g., "shopify"
+  domainMatch: boolean;      // if false => force overall match 0 and show banner
+  formatted: string;         // exact markdown block for copy/paste
 }
 
 export interface AnalysisResult {
@@ -44,4 +47,3 @@ export interface UploadedFile {
   size: number;
   content: ArrayBuffer;
 }
-
