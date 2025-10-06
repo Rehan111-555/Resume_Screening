@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
-import { convert } from "html-to-text";
 import {
   llmExtractProfile,
   llmDeriveKeywords,
@@ -50,17 +49,46 @@ function id() {
 
 export const runtime = "nodejs";
 
-/** Parse a buffer as best as possible (pdf/docx/html/txt already handled up-stream) */
+/** Minimal HTML→text without deps */
+function htmlToText(html: string): string {
+  if (!html) return "";
+  let s = html;
+
+  // normalize newlines for common block-level tags
+  s = s
+    .replace(/<(br|hr)\s*\/?>/gi, "\n")
+    .replace(/<\/(p|div|section|article|ul|ol|li|h[1-6]|tr)>/gi, "\n");
+
+  // remove script/style
+  s = s.replace(/<script[\s\S]*?<\/script>/gi, "").replace(/<style[\s\S]*?<\/style>/gi, "");
+
+  // strip all tags
+  s = s.replace(/<[^>]+>/g, "");
+
+  // decode a few common entities
+  s = s
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&#39;/g, "'")
+    .replace(/&quot;/g, '"');
+
+  // collapse whitespace
+  s = s.replace(/\r/g, "").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  return s;
+}
+
+/** Read best-effort text from uploaded File */
 async function readTextFromFile(file: File): Promise<string> {
   const buf = Buffer.from(await file.arrayBuffer());
+  const txt = buf.toString("utf8");
 
-  // Try pure text first
-  const ascii = buf.toString("utf8");
-  // quick html sniff
-  if (/<\w+[^>]*>/.test(ascii)) {
-    return convert(ascii, { selectors: [{ selector: "a", options: { ignoreHref: true } }] });
-  }
-  return ascii;
+  // if it looks like HTML, convert
+  if (/<\w+[^>]*>/.test(txt)) return htmlToText(txt);
+
+  // otherwise treat as plain text
+  return txt;
 }
 
 export async function POST(req: NextRequest) {
@@ -68,7 +96,12 @@ export async function POST(req: NextRequest) {
     const form = await req.formData();
 
     const jdJson = String(form.get("jobRequirements") || "{}");
-    const jd = JSON.parse(jdJson) as { title: string; description: string; minYearsExperience?: number; educationLevel?: string };
+    const jd = JSON.parse(jdJson) as {
+      title: string;
+      description: string;
+      minYearsExperience?: number;
+      educationLevel?: string;
+    };
     const jdText = `${jd.title || ""}\n${jd.description || ""}`;
 
     const files = form.getAll("resumes").filter(Boolean) as File[];
@@ -82,7 +115,7 @@ export async function POST(req: NextRequest) {
     for (const file of files) {
       const rawText = await readTextFromFile(file);
 
-      // LLM profile (robust, then fallback locally)
+      // LLM profile
       const prof = await llmExtractProfile(rawText);
       const skillList = cleanTokens([...(prof?.skills || []), ...(prof?.tools || [])]);
       const summary = String(prof?.summary || "").trim();
@@ -103,7 +136,10 @@ export async function POST(req: NextRequest) {
 
       // years score vs JD min (if provided)
       const minYears = Number(jd?.minYearsExperience || 0);
-      const yearsScore = minYears ? clamp01(yearsExperience / Math.max(1, minYears)) : clamp01(yearsExperience / 8);
+      const yearsScore = minYears
+        ? clamp01(yearsExperience / Math.max(1, minYears))
+        : clamp01(yearsExperience / 8);
+
       // edu
       const eduScore = eduFit(jd?.educationLevel, eduStr);
 
@@ -116,7 +152,7 @@ export async function POST(req: NextRequest) {
         100 * (0.55 * clamp01(cov.coverage) + 0.25 * yearsScore + 0.10 * eduScore + 0.10 * (domainMismatch ? 0 : sim))
       );
 
-      const c: Candidate = {
+      const candidate: Candidate = {
         id: id(),
         name,
         email: String(prof?.email || ""),
@@ -137,13 +173,12 @@ export async function POST(req: NextRequest) {
         gaps: Array.isArray(prof?.gaps) ? prof.gaps : [],
         mentoringNeeds: Array.isArray(prof?.mentoringNeeds) ? prof.mentoringNeeds : [],
         questions: Array.isArray(prof?.questions) ? prof.questions : [],
-        formatted: "", // filled in UI copy button
+        formatted: "",
       };
 
-      outCandidates.push(c);
+      outCandidates.push(candidate);
     }
 
-    // Sort best first
     outCandidates.sort((a, b) => b.matchScore - a.matchScore);
 
     const payload: AnalysisResult = { candidates: outCandidates };
