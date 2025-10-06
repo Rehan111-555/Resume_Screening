@@ -1,4 +1,5 @@
-/** Job description coming from the form */
+// types/index.ts
+
 export interface JobRequirements {
   title: string;
   description: string;
@@ -6,65 +7,52 @@ export interface JobRequirements {
   educationLevel?: string;
 }
 
-/** A parsed/uploaded file before/after text extraction */
 export interface UploadedFile {
-  id: string;                // stable client id
-  name: string;              // original filename
-  size: number;              // bytes
-  type: string;              // mime-type (e.g., application/pdf)
-  /** client-side state for UX */
-  status?: "queued" | "parsing" | "done" | "error";
-  progress?: number;         // 0..100 (optional)
-  /** extracted plain text (server returns it for preview/debug) */
-  text?: string;
-  /** error message if parsing failed */
-  error?: string | null;
+  id: string;
+  name: string;
+  type: string;
+  size: number;
+
+  /**
+   * The raw content if you stored bytes yourself.
+   * Your UploadBox may put a Blob OR ArrayBuffer here.
+   * It’s optional because some implementations keep the native File instead.
+   */
+  content?: Blob | ArrayBuffer;
+
+  /**
+   * Optional native File. If your UploadBox keeps the File,
+   * we’ll use it directly when posting to the API.
+   */
+  file?: File;
 }
 
-/** One candidate record used everywhere in UI */
 export interface Candidate {
   id: string;
-
-  // identity
   name: string;
   email: string;
   phone: string;
   location: string;
-  title: string;        // headline / current title
+  title: string;
+  yearsExperience: number;
+  education: string;
+  skills: string[];
   summary: string;
 
-  // quick facts
-  yearsExperience: number;         // integer years
-  education: string;               // short label (e.g., "Bachelor")
-  skills: string[];                // cleaned tags
+  // scoring
+  matchScore: number;
+  skillsEvidencePct: number;
+  yearsScore: number;
+  eduScore: number;
 
-  // scoring (card ribbons)
-  matchScore: number;              // 0..100
-  skillsEvidencePct: number;       // 0..100
-
-  // domain flag (if false, we show "Domain not matching")
+  // domain flags
   domainMismatch?: boolean;
 
-  // detail modal
-  strengths?: string[];
-  weaknesses?: string[];
-  gaps?: string[];
-  questions?: string[];
-
-  // formatted markdown/plaintext for “Copy”
+  // UI
   formatted?: string;
-
-  // allow extra fields without breaking
-  [key: string]: unknown;
 }
 
-/** Server response shape for /api/analyze-resumes */
 export interface AnalysisResult {
-  jdSummary?: string;
-  jdKeywords?: {
-    must: { name: string; synonyms: string[] }[];
-    nice: { name: string; synonyms: string[] }[];
-  };
+  jd: JobRequirements;
   candidates: Candidate[];
-  generatedAt?: string;
 }
