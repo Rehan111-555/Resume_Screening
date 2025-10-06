@@ -23,8 +23,12 @@ export interface Candidate {
   gaps: string[];
   mentoringNeeds: string[];
   questions: string[];
-  domainMismatch?: boolean;   // NEW
-  domainNote?: string;        // NEW
+
+  /** NEW: force-zero scoring when domain doesn’t match the JD */
+  domainNotMatching?: boolean;
+
+  /** NEW: your exact, copy-ready write-up in the format you want */
+  formatted?: string;
 }
 
 export interface AnalysisResult {
@@ -40,3 +44,4 @@ export interface UploadedFile {
   size: number;
   content: ArrayBuffer;
 }
+
