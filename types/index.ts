@@ -1,5 +1,6 @@
 // types/index.ts
 
+/** Job definition provided by the user */
 export interface JobRequirements {
   title: string;
   description: string;
@@ -7,6 +8,7 @@ export interface JobRequirements {
   educationLevel?: string;
 }
 
+/** Canonical Candidate shape used across API + UI */
 export interface Candidate {
   id: string;
 
@@ -18,18 +20,20 @@ export interface Candidate {
 
   // Role & background
   title: string;
-  yearsExperience: number;
-  education: string;
+  yearsExperience: number;      // numeric years (can be fractional)
+  education: string;            // normalized label or raw string
 
   // Evidence
-  skills: string[];
-  summary: string;
+  skills: string[];             // tags
+  summary: string;              // brief professional summary
 
-  // Scores
-  matchScore: number;           // 0-100
-  skillsEvidencePct: number;    // 0-100 deterministic skills/evidence percentage
-  yearsScore?: number;          // optional sub-score, if you compute it
-  eduScore?: number;            // optional sub-score, if you compute it
+  // Scores (primary)
+  matchScore: number;           // 0-100 (overall)
+  skillsEvidencePct: number;    // 0-100 (deterministic coverage %)
+
+  // Scores (optional sub-scores if you compute them)
+  yearsScore?: number;          // optional
+  eduScore?: number;            // optional
 
   // Narrative
   strengths: string[];
@@ -37,14 +41,20 @@ export interface Candidate {
   gaps: string[];
   mentoringNeeds: string[];
 
-  // Optional fields (guard in UI)
-  questions?: string[];         // tailored questions (only when domain matches)
-  formatted?: string;           // pre-formatted MD export (optional)
+  // Optional AI extras (guard in UI)
+  questions?: string[];         // tailored questions (omit when domainMismatch = true)
+  formatted?: string;           // preformatted “export” text (optional)
 
-  // Domain
-  domainMismatch: boolean;      // true => show “Domain not matching”, force 0 score view
+  // Domain control
+  domainMismatch: boolean;      // true => treat as out-of-domain (force 0, hide extras)
+
+  // ---- OPTIONAL FIELDS ADDED TO FIX YOUR BUILD ----
+  matchedSkills?: string[];     // from LLM rubric (optional)
+  missingSkills?: string[];     // from LLM rubric (optional)
+  educationSummary?: string;    // from LLM rubric (optional)
 }
 
+/** API result payload */
 export interface AnalysisResult {
   candidates: Candidate[];
   errors?: { file: string; message: string }[];
