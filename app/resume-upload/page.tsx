@@ -9,32 +9,33 @@ import { useApp } from "@/contexts/AppContext";
 import type { UploadedFile, AnalysisResult } from "@/types";
 
 /**
- * Safely obtain a File instance from our UploadedFile shape.
- * - Prefer the native File if present
- * - Otherwise build one from content (Blob | ArrayBuffer)
+ * Convert our UploadedFile shape to a real File to send in FormData.
+ * Works if:
+ *  - you stored the native File on `file`
+ *  - OR you stored raw bytes on `content` (Blob or ArrayBuffer)
  */
 function toFile(u: UploadedFile): File {
-  // If caller stored the native File
-  if (u.file instanceof File) {
-    // Ensure name/type match the stored metadata, if provided
-    const name = u.name || u.file.name || "upload";
-    const type = u.type || u.file.type || "application/octet-stream";
-    // If the original file already has the correct name/type, return as-is
-    if (u.file.name === name && (u.file.type || "application/octet-stream") === type) {
-      return u.file;
+  // Prefer native file if it exists (type-safe check without relying on TS field)
+  const native: File | undefined =
+    (("file" in u && (u as any).file) as File | undefined) || undefined;
+
+  if (native instanceof File) {
+    // Ensure name/type match (if metadata provided on UploadedFile)
+    const name = u.name || native.name || "upload";
+    const type = u.type || native.type || "application/octet-stream";
+    if (native.name === name && (native.type || "application/octet-stream") === type) {
+      return native;
     }
-    // Wrap the existing file’s data to enforce desired name/type
-    return new File([u.file], name, { type });
+    return new File([native], name, { type });
   }
 
-  // If content is a Blob
+  // If we have content as a Blob
   if (u.content instanceof Blob) {
-    return new File([u.content], u.name || "upload", {
-      type: u.type || u.content.type || "application/octet-stream",
-    });
+    const type = u.type || u.content.type || "application/octet-stream";
+    return new File([u.content], u.name || "upload", { type });
   }
 
-  // If content is an ArrayBuffer
+  // If we have content as an ArrayBuffer (or any typed array-like)
   if (u.content && typeof (u.content as any).byteLength === "number") {
     const blob = new Blob([u.content as ArrayBuffer], {
       type: u.type || "application/octet-stream",
@@ -42,7 +43,7 @@ function toFile(u: UploadedFile): File {
     return new File([blob], u.name || "upload");
   }
 
-  // Fallback (shouldn’t happen if UploadBox is wired correctly)
+  // Fallback (shouldn’t happen)
   const fallback = new Blob([], { type: u.type || "application/octet-stream" });
   return new File([fallback], u.name || "upload");
 }
@@ -80,10 +81,15 @@ export default function ResumeUploadPage() {
 
       for (const f of uploadedFiles) {
         const file = toFile(f);
+        // Important: supply the filename explicitly for FormData
         formData.append("resumes", file, file.name);
       }
 
-      const res = await fetch("/api/analyze-resumes", { method: "POST", body: formData });
+      const res = await fetch("/api/analyze-resumes", {
+        method: "POST",
+        body: formData,
+      });
+
       const raw = await res.text();
       if (!res.ok) throw new Error(raw.slice(0, 500));
 
@@ -130,7 +136,7 @@ export default function ResumeUploadPage() {
           {loading ? "Analyzing…" : "Analyze with AI"}
         </button>
 
-        <button
+      <button
           onClick={() => router.push("/job-requirements")}
           className="px-5 py-2.5 rounded-xl border border-gray-300 text-gray-700 hover:bg-gray-50"
         >
