@@ -7,57 +7,46 @@ export interface JobRequirements {
   educationLevel?: string;
 }
 
-export interface UploadedFile {
-  id: string;
-  name: string;
-  type: string;
-  size: number;
-
-  /** If you stored raw bytes yourself */
-  content?: Blob | ArrayBuffer;
-
-  /** If you stored the native File */
-  file?: File;
-}
-
 export interface Candidate {
   id: string;
 
-  // basics parsed from resume
+  // Identity & contact
   name: string;
   email: string;
   phone: string;
   location: string;
+
+  // Role & background
   title: string;
-  summary: string;
-  skills: string[];
-  education: string;
   yearsExperience: number;
+  education: string;
 
-  // computed scores for list cards
-  matchScore: number;
-  skillsEvidencePct: number;
-  yearsScore: number;
-  eduScore: number;
+  // Evidence
+  skills: string[];
+  summary: string;
 
-  // domain flag used for badges/filters
-  domainMismatch?: boolean;
+  // Scores
+  matchScore: number;           // 0-100
+  skillsEvidencePct: number;    // 0-100 deterministic skills/evidence percentage
+  yearsScore?: number;          // optional sub-score, if you compute it
+  eduScore?: number;            // optional sub-score, if you compute it
 
-  // preformatted, copyable detail text (optional)
-  formatted?: string;
+  // Narrative
+  strengths: string[];
+  weaknesses: string[];
+  gaps: string[];
+  mentoringNeeds: string[];
 
-  // OPTIONAL fields the API may add for the detail modal
-  questions?: string[];
-  strengths?: string[];
-  weaknesses?: string[];
-  gaps?: string[];
-  mentoringNeeds?: string[];
-  matchedSkills?: string[];
-  missingSkills?: string[];
-  educationSummary?: string;
+  // Optional fields (guard in UI)
+  questions?: string[];         // tailored questions (only when domain matches)
+  formatted?: string;           // pre-formatted MD export (optional)
+
+  // Domain
+  domainMismatch: boolean;      // true => show “Domain not matching”, force 0 score view
 }
 
 export interface AnalysisResult {
-  jd: JobRequirements;
   candidates: Candidate[];
+  errors?: { file: string; message: string }[];
+  meta?: any;
 }
