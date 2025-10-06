@@ -1,211 +1,102 @@
-'use client';
+"use client";
+import { useEffect, useMemo, useState } from "react";
+import type { Candidate } from "@/types";
 
-import type { Candidate } from '@/types';
-import { X, Download, Mail, Phone, MapPin, Clipboard } from 'lucide-react';
-import { useState } from 'react';
-import { formatExperience } from '@/utils/formatExperience';
+type Props = { candidate: Candidate | null };
 
-interface Props {
-  candidate: Candidate | null;
-  isOpen: boolean;
-  onClose: () => void;
-}
-
-export default function CandidateDetail({ candidate, isOpen, onClose }: Props) {
+export default function CandidateDetail({ candidate }: Props) {
   const [copied, setCopied] = useState(false);
 
-  if (!isOpen || !candidate) return null;
+  const fallbackText = useMemo(() => {
+    if (!candidate) return "";
+    const parts: string[] = [];
+    parts.push(`## Candidate Details — **${candidate.name || "Unknown"}**`);
+    parts.push("");
+    parts.push("**Personal Information**");
+    parts.push(`* Email: ${candidate.email || "Not specified"}`);
+    parts.push(`* Phone: ${candidate.phone || "Not specified"}`);
+    parts.push(`* Location: ${candidate.location || "Not specified"}`);
+    parts.push("");
+    parts.push("**Professional Summary**");
+    parts.push(candidate.summary || "—");
+    return parts.join("\n");
+  }, [candidate]);
 
   async function copyFormatted() {
     try {
-      const text = candidate?.formatted || "";
+      const text = candidate?.formatted || fallbackText;
       if (!text) return;
       await navigator.clipboard.writeText(text);
       setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      setTimeout(() => setCopied(false), 1200);
     } catch {}
   }
 
+  if (!candidate) return null;
+
   return (
-    <div
-      className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="candidate-details-title"
-    >
-      <div className="bg-white rounded-2xl max-w-5xl w-full max-h-[90vh] overflow-y-auto shadow-2xl">
-        <div className="flex justify-between items-center p-6 border-b">
-          <h2 id="candidate-details-title" className="text-2xl font-bold text-gray-900">
-            Candidate Details
-          </h2>
-          <div className="flex items-center gap-3">
-            <button
-              onClick={copyFormatted}
-              className="flex items-center gap-1 text-indigo-600 hover:text-indigo-800"
-              title="Copy formatted summary"
-            >
-              <Clipboard className="h-5 w-5" />
-              {copied ? "Copied" : "Copy"}
-            </button>
-            <button
-              onClick={onClose}
-              className="text-gray-400 hover:text-gray-600 transition-colors"
-              aria-label="Close"
-            >
-              <X className="h-6 w-6" />
-            </button>
+    <div className="p-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-bold">Candidate Details</h2>
+        <button onClick={copyFormatted} className="text-sm px-3 py-1 rounded-lg border">
+          {copied ? "Copied" : "Copy"}
+        </button>
+      </div>
+
+      <div className="grid grid-cols-2 gap-6 mt-4">
+        <div>
+          <h3 className="text-sm font-semibold text-gray-700 mb-1">Personal Information</h3>
+          <div className="text-sm text-gray-800 space-y-1">
+            <div>Email: {candidate.email || "Not specified"}</div>
+            <div>Phone: {candidate.phone || "Not specified"}</div>
+            <div>Location: {candidate.location || "Not specified"}</div>
           </div>
         </div>
-
-        <div className="p-6 space-y-6">
-          {/* Basic Info */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div>
-              <h3 className="text-lg font-semibold mb-4">Personal Information</h3>
-              <div className="space-y-3 text-gray-700">
-                <div className="flex items-center">
-                  <Mail className="h-5 w-5 mr-3 text-blue-500" />
-                  <span>{candidate.email || 'Not specified'}</span>
-                </div>
-                <div className="flex items-center">
-                  <Phone className="h-5 w-5 mr-3 text-green-500" />
-                  <span>{candidate.phone || 'Not specified'}</span>
-                </div>
-                <div className="flex items-center">
-                  <MapPin className="h-5 w-5 mr-3 text-red-500" />
-                  <span>{candidate.location || 'Not specified'}</span>
-                </div>
-              </div>
-            </div>
-
-            <div>
-              <h3 className="text-lg font-semibold mb-4">Professional Summary</h3>
-              <p className="text-gray-700 leading-relaxed">{candidate.summary || "—"}</p>
-            </div>
-          </div>
-
-          {/* Match Breakdown */}
-          <div>
-            <h3 className="text-lg font-semibold mb-4">Match Breakdown</h3>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <div className="text-center p-4 bg-indigo-50 rounded-lg">
-                <div className="text-2xl font-bold text-indigo-700">{candidate.matchScore}%</div>
-                <div className="text-sm text-indigo-700">Overall Match</div>
-              </div>
-              <div className="text-center p-4 bg-emerald-50 rounded-lg">
-                <div className="text-xl font-bold text-emerald-700">
-                  {formatExperience(candidate.yearsExperience)}
-                </div>
-                <div className="text-sm text-emerald-700">Experience</div>
-              </div>
-              <div className="text-center p-4 bg-blue-50 rounded-lg">
-                <div className="text-2xl font-bold text-blue-700">{candidate.skillsEvidencePct}%</div>
-                <div className="text-sm text-blue-700">Skills & Evidence</div>
-              </div>
-              <div className="text-center p-4 bg-purple-50 rounded-lg">
-                <div className="text-xl font-bold text-purple-700">{candidate.education || '—'}</div>
-                <div className="text-sm text-purple-700">Education</div>
-              </div>
-            </div>
-          </div>
-
-          {/* Skills */}
-          <div>
-            <h3 className="text-lg font-semibold mb-4">Skills</h3>
-            <div className="flex flex-wrap gap-2">
-              {(candidate.skills || []).map((skill, index) => (
-                <span
-                  key={`${skill}-${index}`}
-                  className="px-3 py-2 bg-indigo-50 text-indigo-700 rounded-full text-sm"
-                >
-                  {skill}
-                </span>
-              ))}
-              {(!candidate.skills || candidate.skills.length === 0) && <span>—</span>}
-            </div>
-          </div>
-
-          {/* Questions only if in-domain */}
-          {!candidate.domainMismatch && (candidate.questions?.length || 0) > 0 && (
-            <div className="mt-6">
-              <h3 className="mb-2 text-sm font-semibold text-gray-700">
-                AI Interview Questions
-              </h3>
-              <ul className="space-y-2">
-                {candidate.questions!.map((q, i) => (
-                  <li key={i} className="p-3 bg-indigo-50 rounded text-indigo-900">{q}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {/* Analysis */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div>
-              <h3 className="text-lg font-semibold mb-4 text-emerald-600">Strengths</h3>
-              <ul className="space-y-2">
-                {(candidate.strengths || []).map((s, i) => (
-                  <li key={`${s}-${i}`} className="flex items-start">
-                    <div className="w-2 h-2 bg-emerald-500 rounded-full mt-2 mr-3 flex-shrink-0" />
-                    <span className="text-gray-700">{s}</span>
-                  </li>
-                ))}
-                {(!candidate.strengths || candidate.strengths.length === 0) && <li>—</li>}
-              </ul>
-            </div>
-            <div>
-              <h3 className="text-lg font-semibold mb-4 text-rose-600">Areas for Improvement</h3>
-              <ul className="space-y-2">
-                {(candidate.weaknesses || []).map((w, i) => (
-                  <li key={`${w}-${i}`} className="flex items-start">
-                    <div className="w-2 h-2 bg-rose-500 rounded-full mt-2 mr-3 flex-shrink-0" />
-                    <span className="text-gray-700">{w}</span>
-                  </li>
-                ))}
-                {(!candidate.weaknesses || candidate.weaknesses.length === 0) && <li>—</li>}
-              </ul>
-            </div>
-          </div>
-
-          {/* Gaps & Mentoring */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div>
-              <h3 className="text-lg font-semibold mb-4 text-amber-600">Identified Gaps</h3>
-              <ul className="space-y-2">
-                {(candidate.gaps || []).map((g, i) => (
-                  <li key={`${g}-${i}`} className="flex items-start">
-                    <div className="w-2 h-2 bg-amber-500 rounded-full mt-2 mr-3 flex-shrink-0" />
-                    <span className="text-gray-700">{g}</span>
-                  </li>
-                ))}
-                {(!candidate.gaps || candidate.gaps.length === 0) && <li>—</li>}
-              </ul>
-            </div>
-            <div>
-              <h3 className="text-lg font-semibold mb-4 text-fuchsia-600">Mentoring Needs</h3>
-              <ul className="space-y-2">
-                {(candidate.mentoringNeeds || []).map((m, i) => (
-                  <li key={`${m}-${i}`} className="flex items-start">
-                    <div className="w-2 h-2 bg-fuchsia-500 rounded-full mt-2 mr-3 flex-shrink-0" />
-                    <span className="text-gray-700">{m}</span>
-                  </li>
-                ))}
-                {(!candidate.mentoringNeeds || candidate.mentoringNeeds.length === 0) && <li>—</li>}
-              </ul>
-            </div>
-          </div>
-        </div>
-
-        <div className="flex justify-end p-6 border-t">
-          <button
-            className="flex items-center px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
-            onClick={copyFormatted}
-          >
-            <Download className="h-4 w-4 mr-2" />
-            Copy as Text
-          </button>
+        <div>
+          <h3 className="text-sm font-semibold text-gray-700 mb-1">Professional Summary</h3>
+          <p className="text-sm text-gray-800 whitespace-pre-wrap">{candidate.summary || "—"}</p>
         </div>
       </div>
+
+      <div className="grid grid-cols-4 gap-3 mt-6">
+        <Stat label="Overall Match" value={`${candidate.matchScore}%`} />
+        <Stat label="Experience" value={`${candidate.yearsExperience || 0} ${candidate.yearsExperience === 1 ? "year" : "years"}`} />
+        <Stat label="Skills & Evidence" value={`${candidate.skillsEvidencePct || 0}%`} />
+        <Stat label="Education" value={candidate.education || "—"} />
+      </div>
+
+      {candidate.skills?.length > 0 && (
+        <div className="mt-6">
+          <h3 className="text-sm font-semibold text-gray-700 mb-2">Skills</h3>
+          <div className="flex flex-wrap gap-2">
+            {candidate.skills.map((s, i) => (
+              <span key={i} className="text-xs px-2 py-1 bg-indigo-50 text-indigo-700 rounded-full">
+                {s}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {!candidate.domainMismatch && candidate.questions && candidate.questions.length > 0 && (
+        <div className="mt-6">
+          <h3 className="text-sm font-semibold text-gray-700 mb-2">AI Interview Questions</h3>
+          <ol className="list-decimal pl-5 text-sm space-y-1">
+            {candidate.questions.map((q, i) => (
+              <li key={i}>{q}</li>
+            ))}
+          </ol>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg bg-gray-50 p-3">
+      <div className="text-xs text-gray-500">{label}</div>
+      <div className="font-semibold">{value}</div>
     </div>
   );
 }
