@@ -18,10 +18,13 @@ export default function CandidateDetail({ candidate, isOpen, onClose, onDownload
 
   async function copyFormatted() {
     try {
-      await navigator.clipboard.writeText(candidate.formatted || "");
+      // ✅ Use optional chaining so TS knows it's safe
+      await navigator.clipboard.writeText(candidate?.formatted ?? '');
       setCopied(true);
       setTimeout(() => setCopied(false), 1400);
-    } catch {}
+    } catch {
+      /* no-op */
+    }
   }
 
   return (
@@ -42,7 +45,6 @@ export default function CandidateDetail({ candidate, isOpen, onClose, onDownload
             </div>
           )}
 
-          {/* Personal + Summary */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div>
               <h3 className="text-lg font-semibold mb-4">Personal Information</h3>
@@ -68,7 +70,6 @@ export default function CandidateDetail({ candidate, isOpen, onClose, onDownload
             </div>
           </div>
 
-          {/* Match */}
           <div>
             <h3 className="text-lg font-semibold mb-4">Match Breakdown</h3>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -77,7 +78,9 @@ export default function CandidateDetail({ candidate, isOpen, onClose, onDownload
                 <div className="text-sm text-indigo-700">Overall Match</div>
               </div>
               <div className="text-center p-4 bg-emerald-50 rounded-lg">
-                <div className="text-xl font-bold text-emerald-700">{formatExperience(candidate.yearsExperience)}</div>
+                <div className="text-xl font-bold text-emerald-700">
+                  {formatExperience(candidate.yearsExperience)}
+                </div>
                 <div className="text-sm text-emerald-700">Experience</div>
               </div>
               <div className="text-center p-4 bg-blue-50 rounded-lg">
@@ -91,7 +94,6 @@ export default function CandidateDetail({ candidate, isOpen, onClose, onDownload
             </div>
           </div>
 
-          {/* Skills */}
           <div>
             <h3 className="text-lg font-semibold mb-4">Skills</h3>
             <div className="flex flex-wrap gap-2">
@@ -104,7 +106,6 @@ export default function CandidateDetail({ candidate, isOpen, onClose, onDownload
             </div>
           </div>
 
-          {/* Questions */}
           {candidate.questions?.length > 0 && (
             <div>
               <h3 className="text-lg font-semibold mb-3 text-indigo-600">AI Interview Questions</h3>
@@ -116,7 +117,6 @@ export default function CandidateDetail({ candidate, isOpen, onClose, onDownload
             </div>
           )}
 
-          {/* Strengths / Improvements */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div>
               <h3 className="text-lg font-semibold mb-4 text-emerald-600">Strengths</h3>
@@ -144,7 +144,6 @@ export default function CandidateDetail({ candidate, isOpen, onClose, onDownload
             </div>
           </div>
 
-          {/* Gaps / Mentoring */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div>
               <h3 className="text-lg font-semibold mb-4 text-amber-600">Identified Gaps</h3>
@@ -176,10 +175,12 @@ export default function CandidateDetail({ candidate, isOpen, onClose, onDownload
         <div className="flex justify-between items-center p-6 border-t">
           <button
             onClick={copyFormatted}
-            className="flex items-center px-4 py-2 border rounded-lg text-gray-700 hover:bg-gray-50"
+            disabled={!candidate.formatted}
+            aria-disabled={!candidate.formatted}
+            className={`flex items-center px-4 py-2 border rounded-lg text-gray-700 hover:bg-gray-50 ${!candidate.formatted ? 'opacity-50 cursor-not-allowed' : ''}`}
           >
             <Clipboard className="h-4 w-4 mr-2" />
-            {copied ? "Copied!" : "Copy formatted report"}
+            {copied ? 'Copied!' : 'Copy formatted report'}
           </button>
 
           <button
