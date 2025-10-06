@@ -6,18 +6,20 @@ import {
   llmDeriveKeywords,
   scoreHeuristically,
   llmGradeCandidate,
+  JDKeywords,
   mapEduLevel,
   eduFit,
   clamp01,
-  estimateExperienceYears,
-  inferDomainTokensFromJD,
-  resumeMatchesDomain,
-  type JDKeywords,
+  cleanSkillTokens,
+  domainSignatureFromJD,
+  detectDomainMismatch,
+  guessYearsExperience,
 } from "@/utils/geminiClient.server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+/* concurrency gate */
 function createLimiter(maxConcurrent: number) {
   let active = 0;
   const queue: Array<() => void> = [];
@@ -28,7 +30,7 @@ function createLimiter(maxConcurrent: number) {
   };
 }
 
-/* ---------- file → text (multi-format) ---------- */
+/* extract resume text from file */
 async function extractTextFromFile(file: File): Promise<string> {
   const name = (file.name || "").toLowerCase();
   const buf = Buffer.from(await file.arrayBuffer());
@@ -36,12 +38,14 @@ async function extractTextFromFile(file: File): Promise<string> {
   if (name.endsWith(".pdf")) {
     const pdf = (await import("pdf-parse")).default;
     const res = await pdf(buf);
-    return res.text || "";
+    const t = res.text || "";
+    // pdf-parse sometimes returns line breaks only; normalize
+    return t.replace(/\s+\n/g, "\n").replace(/\n{2,}/g, "\n").trim();
   }
   if (name.endsWith(".docx") || name.endsWith(".doc")) {
     const mammoth = await import("mammoth");
     const { value } = await mammoth.extractRawText({ buffer: buf });
-    return value || "";
+    return (value || "").trim();
   }
   if (name.endsWith(".html") || name.endsWith(".htm")) {
     return convert(buf.toString("utf8"));
@@ -49,21 +53,7 @@ async function extractTextFromFile(file: File): Promise<string> {
   return buf.toString("utf8");
 }
 
-/* ---------- helpers ---------- */
-const JUNK_GAP_WORDS = new Set([
-  "best","practices","practice","proactive","strong","experience","understanding","customizing",
-  "development","developer","process","processes"
-]);
-const ONLY_ALPHA = /[a-z]/i;
-
-function asSkillLike(s: string): boolean {
-  const t = (s || "").toLowerCase().trim();
-  if (!t || t.length < 3) return false;
-  if (!ONLY_ALPHA.test(t)) return false;
-  if (JUNK_GAP_WORDS.has(t)) return false;
-  return true;
-}
-
+/* types shared w/ UI (duplicated for route safety) */
 type JobRequirements = {
   title: string;
   description: string;
@@ -88,16 +78,16 @@ type Candidate = {
   gaps: string[];
   mentoringNeeds: string[];
   questions: string[];
-  domainMismatch?: boolean;
   formatted?: string;
+  domainMismatch?: boolean;
+  domainHints?: string[];
 };
 type AnalysisResult = {
   candidates: Candidate[];
   errors?: { file: string; message: string }[];
-  meta?: { keywords: JDKeywords; domainTokens: string[] };
+  meta?: { keywords: JDKeywords };
 };
 
-/* ---------- route ---------- */
 export async function POST(req: NextRequest) {
   try {
     const form = await req.formData();
@@ -117,13 +107,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Limit 100 resumes per batch." }, { status: 400 });
     }
 
-    // Derive JD keywords + infer domain tokens automatically (no hardcoding)
-    const [keywords, domainTokens] = await Promise.all([
-      llmDeriveKeywords(JD),
-      Promise.resolve(inferDomainTokensFromJD(job.title || "", job.description || "")),
-    ]);
+    // Derive JD keywords (role-agnostic) and domain signature
+    const [keywords] = await Promise.all([llmDeriveKeywords(JD)]);
+    const domainSig = domainSignatureFromJD(JD);
 
-    const limit = createLimiter(8);
+    const limit = createLimiter(10);
     const errors: { file: string; message: string }[] = [];
     const candidates: Candidate[] = [];
 
@@ -132,115 +120,76 @@ export async function POST(req: NextRequest) {
         limit(async () => {
           try {
             const text = await extractTextFromFile(f);
-            const isDomain = resumeMatchesDomain(text, domainTokens);
 
-            // short-circuit: if domain mismatch => we STILL parse but score is 0 and hide extras.
-            const [profile, rubric] = await Promise.all([
+            // LLMs (profile + human rubric, in parallel)
+            const [profile, llmRubric] = await Promise.all([
               llmExtractProfile(text),
-              isDomain ? llmGradeCandidate(JD, text) : Promise.resolve<any>({ score: 0 })
+              llmGradeCandidate(JD, text),
             ]);
 
-            // Evidence (deterministic)
+            // Heuristic evidence
             const h = scoreHeuristically(text, keywords);
             const skillsEvidencePct = Math.round(h.coverage * 100);
 
-            // Experience: prefer profile → rubric → regex dates
-            let years = Number(
-              (profile?.yearsExperience || rubric?.yearsExperienceEstimate || 0)
+            // Domain detection (automatic signature from JD)
+            const domain = detectDomainMismatch(text, domainSig);
+
+            // Experience — LLM + regex + dates fusion
+            const years = Number(
+              guessYearsExperience(text, llmRubric?.yearsExperienceEstimate || profile?.yearsExperience)
             );
-            if (!Number.isFinite(years) || years <= 0) {
-              years = estimateExperienceYears(text);
-            }
-            years = Number((years || 0).toFixed(2));
 
             // Education
             const eduStr =
               Array.isArray(profile?.education) && profile.education.length
                 ? [profile.education[0]?.degree, profile.education[0]?.field, profile.education[0]?.institution]
-                    .filter(Boolean)
-                    .join(", ")
-                : (rubric?.educationSummary || "");
+                    .filter(Boolean).join(", ")
+                : (llmRubric?.educationSummary || "");
             const eduLabel = mapEduLevel(eduStr);
             const eduScore = eduFit(job.educationLevel, eduLabel);
 
-            // Overall (if domain mismatch => 0)
-            const expFit = clamp01(
-              job.minYearsExperience ? (years / Math.max(0.1, job.minYearsExperience)) : 1
-            );
-            const llmNorm = (rubric?.score || 0) / 100;
-            let overall = 0.55 * h.coverage + 0.25 * expFit + 0.10 * eduScore + 0.10 * llmNorm;
-            overall = isDomain ? clamp01(overall) : 0;
+            // LLM score normalized
+            const llmNorm = (llmRubric?.score || 0) / 100;
+
+            // Base blended score
+            let overall = 0.55 * h.coverage + 0.25 * (job.minYearsExperience ? years / job.minYearsExperience : 1) + 0.1 * eduScore + 0.1 * llmNorm;
+            overall = clamp01(overall);
+
+            // If domain mismatch, clamp way down and strip questions/narrative noise
+            const domainMismatch = domain.mismatch;
+            if (domainMismatch) {
+              overall = Math.min(overall, 0.05); // ~0–5%
+            }
+
             const matchScore = Math.round(100 * overall);
 
-            // Skills (merged)
-            const mergedSkills = Array.from(
-              new Set<string>([
-                ...(Array.isArray(profile?.skills) ? profile.skills : []).map(String),
-                ...(Array.isArray(rubric?.matchedSkills) ? rubric.matchedSkills : []).map(String),
-                ...h.matched,
-              ].filter(Boolean))
-            );
+            // Skills – merge & clean (remove junk like "best", "practices", "strong")
+            const mergedSkills = cleanSkillTokens([
+              ...(Array.isArray(profile?.skills) ? profile.skills : []).map(String),
+              ...(Array.isArray(llmRubric?.matchedSkills) ? llmRubric.matchedSkills : []).map(String),
+              ...h.matched,
+            ]);
 
-            // Narrative (strip junk)
-            const strengths = (Array.isArray(rubric?.strengths) ? rubric.strengths : [])
-              .filter((x: string) => x && x.length <= 240);
-            const missing = h.missing.filter(asSkillLike);
-            const weaknesses = (Array.isArray(rubric?.weaknesses) ? rubric.weaknesses : [])
-              .concat(missing.length ? [`Missing vs JD: ${missing.slice(0, 8).join(", ")}`] : [])
-              .filter(Boolean);
+            // Narrative
+            const strengths = domainMismatch ? [] : [
+              ...(Array.isArray(llmRubric?.strengths) ? llmRubric.strengths : []),
+              ...(h.matched.length ? [`Strong evidence for: ${h.matched.slice(0, 10).join(", ")}`] : []),
+            ];
+            const missing = h.missing;
+            const weaknesses = domainMismatch ? [] : [
+              ...(Array.isArray(llmRubric?.weaknesses) ? llmRubric.weaknesses : []),
+              ...(missing.length ? [`Missing vs JD: ${missing.slice(0, 8).join(", ")}`] : []),
+            ];
 
-            const questions = (isDomain && matchScore > 0)
-              ? (Array.isArray(rubric?.questions) ? rubric.questions : [])
-              : [];
+            const questions = domainMismatch ? [] : (Array.isArray(llmRubric?.questions) ? llmRubric.questions : []);
 
-            const nameGuess = profile?.name || f.name.replace(/\.(pdf|docx|doc|txt|html?)$/i, "");
-
-            // preformatted MD block in your exact layout
-            const formatted = `
-Candidate Details — **${nameGuess}**
-
-Personal Information
-
-Email: ${profile?.email || ""}
-Phone: ${profile?.phone || ""}
-Location: ${profile?.location || ""}
-
-Professional Summary
-${(profile?.summary || text.slice(0, 400).replace(/\s+/g, " ")).trim()}
-
-Match Breakdown
-
-Overall Match: ${matchScore}%
-Experience: ${years} years
-Skills & Evidence: ${skillsEvidencePct}%
-Education: ${eduLabel || "N/A"}
-
-Skills
-${mergedSkills.slice(0, 30).join(", ")}
-
-AI Interview Questions
-${questions.map((q: string) => `• ${q}`).join("\n")}
-
-Strengths
-${strengths.map((s: string) => `• ${s}`).join("\n")}
-
-Areas for Improvement
-${weaknesses.map((w: string) => `• ${w}`).join("\n")}
-
-Identified Gaps (vs JD)
-${missing.map((m: string) => `Skill gap: ${m}`).join("\n")}
-
-Mentoring Needs
-${missing.slice(0, 3).map((m: string) => `• Mentorship in ${m}`).join("\n")}
-
-What I’ll do automatically
-Parse the resume and JD, align must-have vs nice-to-have skills.
-Score Overall Match (skills 65%, experience 15%, education 10%, domain/impact 10%)
-`.trim();
+            const formatted = domainMismatch
+              ? `Candidate appears to be from a different domain than the JD.\nOverall Match: ${matchScore}%`
+              : "";
 
             candidates.push({
               id: crypto.randomUUID(),
-              name: nameGuess,
+              name: profile?.name || f.name.replace(/\.(pdf|docx|doc|txt|html?)$/i, ""),
               email: profile?.email || "",
               phone: profile?.phone || "",
               location: profile?.location || "",
@@ -253,11 +202,12 @@ Score Overall Match (skills 65%, experience 15%, education 10%, domain/impact 10
               skillsEvidencePct,
               strengths,
               weaknesses,
-              gaps: missing.map((m: string) => `Skill gap: ${m}`),
-              mentoringNeeds: missing.slice(0, 3).map((m: string) => `Mentorship in ${m}`),
+              gaps: domainMismatch ? [] : missing.map((m: string) => `Skill gap: ${m}`),
+              mentoringNeeds: domainMismatch ? [] : missing.slice(0, 3).map((m: string) => `Mentorship in ${m}`),
               questions,
-              domainMismatch: !isDomain,
               formatted,
+              domainMismatch,
+              domainHints: domain.mismatch ? domainSig.slice(0, 6) : domain.hits.slice(0, 6),
             });
           } catch (e: any) {
             errors.push({ file: f.name, message: String(e?.message || e) });
@@ -266,14 +216,10 @@ Score Overall Match (skills 65%, experience 15%, education 10%, domain/impact 10
       )
     );
 
+    // rank by score
     candidates.sort((a, b) => (b.matchScore || 0) - (a.matchScore || 0));
 
-    const result: AnalysisResult = {
-      candidates,
-      errors,
-      meta: { keywords, domainTokens },
-    };
-
+    const result: AnalysisResult = { candidates, errors, meta: { keywords } };
     return NextResponse.json(result);
   } catch (err: any) {
     return NextResponse.json(
