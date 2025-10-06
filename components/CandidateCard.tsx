@@ -10,12 +10,19 @@ interface CandidateCardProps {
   onClick: () => void;
 }
 
-export default function CandidateCard({ candidate, isSelected, onClick }: CandidateCardProps) {
+export default function CandidateCard({
+  candidate,
+  isSelected,
+  onClick,
+}: CandidateCardProps) {
   const getScoreColor = (score: number) => {
     if (score >= 85) return 'text-green-700 bg-green-50 ring-1 ring-green-200';
     if (score >= 65) return 'text-yellow-700 bg-yellow-50 ring-1 ring-yellow-200';
     return 'text-red-700 bg-red-50 ring-1 ring-red-200';
   };
+
+  // defensively clamp a noisy skills array to strings only
+  const skills = (candidate.skills || []).map(String).filter(Boolean);
 
   return (
     <button
@@ -26,17 +33,33 @@ export default function CandidateCard({ candidate, isSelected, onClick }: Candid
       }`}
       aria-pressed={isSelected}
     >
-      <div className="flex justify-between items-start mb-3">
-        <div className="min-w-0">
-          <h3 className="font-semibold text-lg text-gray-900 truncate">{candidate.name}</h3>
-          <p className="text-gray-600 line-clamp-1">{candidate.title}</p>
+      {/* Header */}
+      <div className="flex justify-between items-start mb-3 gap-3">
+        <div className="min-w-0 flex-1">
+          <h3 className="font-semibold text-lg text-gray-900 truncate" title={candidate.name}>
+            {candidate.name}
+          </h3>
+          <p className="text-gray-600 truncate" title={candidate.title}>
+            {candidate.title}
+          </p>
         </div>
+
         <div className="flex flex-col items-end gap-1 shrink-0">
-          <div className={`px-3 py-1 rounded-full font-semibold ${getScoreColor(candidate.matchScore)}`}>
+          <div
+            className={`px-3 py-1 rounded-full font-semibold ${getScoreColor(
+              candidate.matchScore
+            )}`}
+            aria-label={`Match score ${candidate.matchScore} percent`}
+          >
             {candidate.matchScore}% match
           </div>
-          {candidate.domainMatch === false && (
-            <div className="flex items-center text-xs px-2 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200">
+
+          {/* Domain mismatch badge (new) */}
+          {candidate.domainMismatch === true && (
+            <div
+              className="flex items-center text-xs px-2 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200"
+              title="The resume domain doesn't match the job domain"
+            >
               <AlertTriangle className="h-3 w-3 mr-1" />
               Domain not matching
             </div>
@@ -44,9 +67,10 @@ export default function CandidateCard({ candidate, isSelected, onClick }: Candid
         </div>
       </div>
 
+      {/* Stats */}
       <div className="grid grid-cols-3 gap-2 mb-3 text-sm">
         <div className="text-center p-2 rounded-lg bg-blue-50 text-blue-700">
-          <div className="font-bold">{candidate.skillsEvidencePct}%</div>
+          <div className="font-bold">{Math.max(0, Math.min(100, candidate.skillsEvidencePct))}%</div>
           <div className="text-xs">Skills & Evidence</div>
         </div>
         <div className="flex items-center justify-center p-2 rounded-lg bg-emerald-50 text-emerald-700">
@@ -59,21 +83,33 @@ export default function CandidateCard({ candidate, isSelected, onClick }: Candid
         </div>
       </div>
 
+      {/* Skills */}
       <div className="mb-3">
         <div className="flex flex-wrap gap-1">
-          {(candidate.skills || []).slice(0, 6).map((skill, index) => (
-            <span key={`${skill}-${index}`} className="chip">{skill}</span>
+          {skills.slice(0, 6).map((skill, index) => (
+            <span
+              key={`${skill}-${index}`}
+              className="px-2 py-1 bg-indigo-50 text-indigo-700 text-xs rounded-full max-w-[10rem] truncate"
+              title={skill}
+            >
+              {skill}
+            </span>
           ))}
-          {(candidate.skills || []).length > 6 && (
-            <span className="chip bg-gray-100 text-gray-600">+{candidate.skills.length - 6} more</span>
+          {skills.length > 6 && (
+            <span className="px-2 py-1 bg-gray-100 text-gray-600 text-xs rounded-full">
+              +{skills.length - 6} more
+            </span>
           )}
         </div>
       </div>
 
-      <div className="flex items-center text-indigo-600 text-sm">
-        <HelpCircle className="h-4 w-4 mr-1" />
-        Tailored interview questions in details
-      </div>
+      {/* Footer hint — hidden if domain mismatched */}
+      {!candidate.domainMismatch && (
+        <div className="flex items-center text-indigo-600 text-sm">
+          <HelpCircle className="h-4 w-4 mr-1" />
+          Tailored interview questions in details
+        </div>
+      )}
     </button>
   );
 }
