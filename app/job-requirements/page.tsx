@@ -31,7 +31,6 @@ export default function JobRequirementsPage() {
       payload: {
         title: title.trim(),
         description: description.trim(),
-        // NOTE: requiredSkills removed — app is role-agnostic and uses JD text only
         minYearsExperience: Number(minYears) || 0,
         educationLevel: education,
       },
@@ -46,8 +45,7 @@ export default function JobRequirementsPage() {
         Job Requirements
       </h1>
       <p className="text-gray-600 mb-6">
-        Tell us about the position you’re hiring for. The AI will extract all competencies directly
-        from your Job Description (no manual skills needed).
+        Paste the JD. The AI will extract competencies and score resumes strictly against this text.
       </p>
 
       <div className="space-y-5 bg-white rounded-2xl shadow p-6">
@@ -67,12 +65,9 @@ export default function JobRequirementsPage() {
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             rows={10}
-            placeholder="Paste the full JD here. The AI will strictly analyze resumes against this text."
+            placeholder="Paste the full JD here (responsibilities, tools, domain, must-haves...)."
             className="w-full rounded-lg border-gray-300 focus:border-indigo-500 focus:ring-indigo-500"
           />
-          <p className="text-xs text-gray-500 mt-1">
-            Tip: Include responsibilities, tools, domain, must-haves, and nice-to-haves.
-          </p>
         </div>
 
         <div className="grid md:grid-cols-2 gap-4">
@@ -98,7 +93,6 @@ export default function JobRequirementsPage() {
               onChange={(e) => setEducation(e.target.value)}
               className="w-full rounded-lg border-gray-300 focus:border-indigo-500 focus:ring-indigo-500"
             >
-              <option>High School</option>
               <option>Intermediate/High School</option>
               <option>Bachelor</option>
               <option>Master</option>
