@@ -1,45 +1,95 @@
-// app/api/analyze-resumes/route.ts
 import { NextRequest, NextResponse } from "next/server";
-import type { ResumeProfile, Candidate } from "@/utils/geminiClient.server";
+import {
+  llmExtractProfile,
+  llmDeriveKeywords,
+  scoreHeuristically,
+  llmGradeCandidate,
+  JDKeywords,
+} from "@/utils/geminiClient.server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/* -------------------------------- helpers -------------------------------- */
-
 function createLimiter(maxConcurrent: number) {
   let active = 0;
   const queue: Array<() => void> = [];
-  const next = () => {
-    active--;
-    const run = queue.shift();
-    if (run) {
-      active++;
-      run();
-    }
-  };
+  const next = () => { active--; const run = queue.shift(); if (run) { active++; run(); } };
   return async function <T>(task: () => Promise<T>): Promise<T> {
     if (active >= maxConcurrent) await new Promise<void>((res) => queue.push(res));
-    active++;
-    try {
-      return await task();
-    } finally {
-      next();
-    }
+    active++; try { return await task(); } finally { next(); }
   };
 }
 
-function safeParse<T = any>(raw: string): T | null {
-  try { return JSON.parse(raw) as T; } catch {}
-  const stripped = raw.replace(/```json|```/g, "").trim();
-  try { return JSON.parse(stripped) as T; } catch {}
-  const m = stripped.match(/\{[\s\S]*\}$/);
-  if (m) { try { return JSON.parse(m[0]) as T; } catch {} }
-  return null;
+/* Basic helpers */
+function mapEduLevel(s: string): string {
+  const x = (s || "").toLowerCase();
+  if (/ph\.?d|doctor/i.test(x)) return "PhD";
+  if (/master|msc|ms\b/i.test(x)) return "Master";
+  if (/bachelor|bs\b|bsc\b/i.test(x)) return "Bachelor";
+  if (/intermediate|high school|hs/i.test(x)) return "Intermediate/High School";
+  return s || "";
+}
+function eduFit(required?: string, have?: string): number {
+  const r = (required || "").toLowerCase();
+  const h = (have || "").toLowerCase();
+  if (!r) return 0.7;
+  if (r.includes("phd")) return h.includes("phd") ? 1 : 0.6;
+  if (r.includes("master")) return h.match(/phd|master/) ? 1 : h.includes("bachelor") ? 0.7 : 0.4;
+  if (r.includes("bachelor")) return h.match(/phd|master|bachelor/) ? 1 : 0.5;
+  return h ? 0.7 : 0.3;
+}
+function clamp01(n: number) { return Math.max(0, Math.min(1, n)); }
+
+async function extractTextFromFile(file: File): Promise<string> {
+  const name = (file.name || "").toLowerCase();
+  const buf = Buffer.from(await file.arrayBuffer());
+
+  if (name.endsWith(".pdf")) {
+    const pdf = (await import("pdf-parse")).default;
+    const res = await pdf(buf);
+    return res.text || "";
+  }
+  if (name.endsWith(".docx") || name.endsWith(".doc")) {
+    const mammoth = await import("mammoth");
+    const { value } = await mammoth.extractRawText({ buffer: buf });
+    return value || "";
+  }
+  return buf.toString("utf8");
 }
 
-/* --------------------------------- route --------------------------------- */
+/* Types shared with UI */
+type JobRequirements = {
+  title: string;
+  description: string;
+  minYearsExperience?: number;
+  educationLevel?: string;
+};
+type Candidate = {
+  id: string;
+  name: string;
+  email: string;
+  phone: string;
+  location: string;
+  title: string;
+  yearsExperience: number;
+  education: string;
+  skills: string[];
+  summary: string;
+  matchScore: number;
+  skillsEvidencePct: number;
+  strengths: string[];
+  weaknesses: string[];
+  gaps: string[];
+  mentoringNeeds: string[];
+  questions: string[];
+};
+type AnalysisResult = {
+  candidates: Candidate[];
+  errors?: { file: string; message: string }[];
+  meta?: { keywords: JDKeywords };
+};
 
+/* Route */
 export async function POST(req: NextRequest) {
   try {
     const form = await req.formData();
@@ -48,111 +98,120 @@ export async function POST(req: NextRequest) {
     if (!jrRaw || typeof jrRaw !== "string") {
       return NextResponse.json({ error: "Missing jobRequirements (stringified JSON)." }, { status: 400 });
     }
-    const jobRequirements = JSON.parse(jrRaw);
+    const job: JobRequirements = JSON.parse(jrRaw);
+    const JD = `${job.title || ""}\n\n${job.description || ""}`;
 
     const resumeFiles = form.getAll("resumes") as File[];
     if (!resumeFiles.length) {
       return NextResponse.json({ error: "No resumes uploaded (field name must be 'resumes')." }, { status: 400 });
     }
+    if (resumeFiles.length > 100) {
+      return NextResponse.json({ error: "Limit 100 resumes per batch." }, { status: 400 });
+    }
 
-    const files = await Promise.all(
-      resumeFiles.map(async (f) => ({
-        name: f.name || "resume",
-        mimeType: f.type || "application/octet-stream",
-        bytes: Buffer.from(await f.arrayBuffer()),
-      }))
-    );
+    // Derive JD keywords (role-agnostic)
+    const keywords = await llmDeriveKeywords(JD);
 
-    const { extractProfileFromFile, analyzeProfileWithLLM } = await import("@/utils/geminiClient.server");
-    const limit = createLimiter(6);
+    const limit = createLimiter(10);
+    const errors: { file: string; message: string }[] = [];
+    const candidates: Candidate[] = [];
 
-    // 1) extract profiles
-    const profiles = await Promise.all(
-      files.map((file) =>
+    await Promise.all(
+      resumeFiles.map((f) =>
         limit(async () => {
           try {
-            const profile = await extractProfileFromFile(file);
-            if (!profile?.name) profile.name = file.name.replace(/\.(pdf|docx|png|jpe?g)$/i, "") || "Unknown";
-            return { file, profile };
-          } catch {
-            const p: ResumeProfile = {
-              name: file.name.replace(/\.(pdf|docx|png|jpe?g)$/i, "") || "Unknown",
-              skills: [],
-              education: [],
-              experience: [],
-              title: "",
-              email: "",
-              phone: "",
-              location: "",
-              summary: "",
-            };
-            return { file, profile: p };
+            const text = await extractTextFromFile(f);
+            const [profile, llmRubric] = await Promise.all([
+              llmExtractProfile(text),
+              llmGradeCandidate(JD, text),
+            ]);
+
+            // Heuristic evidence (strict)
+            const h = scoreHeuristically(text, keywords);
+            const skillsEvidencePct = Math.round(h.coverage * 100);
+
+            // Experience
+            const years = Number(
+              (profile?.yearsExperience || llmRubric?.yearsExperienceEstimate || 0).toFixed(2)
+            );
+            const expFit = clamp01(
+              job.minYearsExperience ? years / job.minYearsExperience : 1
+            );
+
+            // Education
+            const eduStr =
+              Array.isArray(profile?.education) && profile.education.length
+                ? [profile.education[0]?.degree, profile.education[0]?.field, profile.education[0]?.institution]
+                    .filter(Boolean)
+                    .join(", ")
+                : (llmRubric?.educationSummary || "");
+            const eduLabel = mapEduLevel(eduStr);
+            const eduScore = eduFit(job.educationLevel, eduLabel);
+
+            // Blended overall score
+            const llmNorm = (llmRubric?.score || 0) / 100;
+            const overall = 0.55 * h.coverage + 0.25 * expFit + 0.1 * eduScore + 0.1 * llmNorm;
+            const matchScore = Math.round(100 * clamp01(overall));
+
+            // Skills (merged)
+            const mergedSkills = Array.from(
+              new Set<string>([
+                ...(Array.isArray(profile?.skills) ? profile.skills : []).map(String),
+                ...(Array.isArray(llmRubric?.matchedSkills) ? llmRubric.matchedSkills : []).map(String),
+                ...h.matched,
+              ].filter(Boolean))
+            );
+
+            // Narrative
+            const strengths = [
+              ...(Array.isArray(llmRubric?.strengths) ? llmRubric.strengths : []),
+              ...(h.matched.length ? [`Strong evidence for: ${h.matched.slice(0, 10).join(", ")}`] : []),
+            ];
+            const missing = h.missing;
+            const weaknesses = [
+              ...(Array.isArray(llmRubric?.weaknesses) ? llmRubric.weaknesses : []),
+              ...(missing.length ? [`Missing vs JD: ${missing.slice(0, 8).join(", ")}`] : []),
+            ];
+
+            candidates.push({
+              id: crypto.randomUUID(),
+              name: profile?.name || f.name.replace(/\.(pdf|docx|doc|txt)$/i, ""),
+              email: profile?.email || "",
+              phone: profile?.phone || "",
+              location: profile?.location || "",
+              title: profile?.headline || (profile?.experience?.[0]?.title || ""),
+              yearsExperience: years,
+              education: eduLabel || eduStr || "",
+              skills: mergedSkills,
+              summary: profile?.summary || text.slice(0, 500).replace(/\s+/g, " "),
+              matchScore,
+              skillsEvidencePct,
+              strengths,
+              weaknesses,
+              gaps: missing.map((m: string) => `Skill gap: ${m}`),
+              mentoringNeeds: missing.slice(0, 3).map((m: string) => `Mentorship in ${m}`),
+              questions: Array.isArray(llmRubric?.questions) ? llmRubric.questions : [],
+            });
+          } catch (e: any) {
+            errors.push({ file: f.name, message: String(e?.message || e) });
           }
         })
       )
     );
 
-    // 2) LLM analysis ONLY (no local heuristics)
-    const candidates: Candidate[] = [];
-    const errors: { file: string; message: string }[] = [];
-
-    for (const { file, profile } of profiles) {
-      try {
-        const raw = await analyzeProfileWithLLM(jobRequirements, profile);
-        const parsed = safeParse(raw) || raw;
-        const c = parsed?.candidates?.[0];
-
-        // Normalize minimal shape if LLM misses fields
-        const candidate: Candidate = {
-          id: c?.id || crypto.randomUUID(),
-          name: c?.name || profile.name || file.name,
-          email: c?.email || profile.email || "",
-          phone: c?.phone || profile.phone || "",
-          location: c?.location || profile.location || "",
-          title: c?.title || profile.title || "",
-          yearsExperience: Number(c?.yearsExperience ?? 0),
-          education: c?.education || "",
-          skills: Array.isArray(c?.skills) ? c.skills : (profile.skills || []),
-          summary: c?.summary || profile.summary || "",
-          matchScore: Math.max(0, Math.min(100, Number(c?.matchScore ?? 0))),
-          strengths: Array.isArray(c?.strengths) ? c.strengths : [],
-          weaknesses: Array.isArray(c?.weaknesses) ? c.weaknesses : [],
-          gaps: Array.isArray(c?.gaps) ? c.gaps : [],
-          mentoringNeeds: Array.isArray(c?.mentoringNeeds) ? c.mentoringNeeds : [],
-          questions: Array.isArray(c?.questions) ? c.questions : [],
-        };
-
-        candidates.push(candidate);
-      } catch (e: any) {
-        errors.push({ file: file.name, message: `LLM analysis failed: ${String(e?.message || e)}` });
-        // Still include a minimal candidate so results grid keeps order
-        candidates.push({
-          id: crypto.randomUUID(),
-          name: profile.name || file.name,
-          email: profile.email || "",
-          phone: profile.phone || "",
-          location: profile.location || "",
-          title: profile.title || "",
-          yearsExperience: 0,
-          education: "",
-          skills: profile.skills || [],
-          summary: profile.summary || "",
-          matchScore: 0,
-          strengths: [],
-          weaknesses: [],
-          gaps: [],
-          mentoringNeeds: [],
-          questions: [],
-        });
-      }
-    }
-
-    // 3) sort by matchScore
     candidates.sort((a, b) => (b.matchScore || 0) - (a.matchScore || 0));
 
-    // Return ONLY candidates (each has their own questions)
-    return NextResponse.json({ candidates, errors });
+    const result: AnalysisResult = {
+      candidates,
+      errors,
+      meta: { keywords },
+    };
+
+    return NextResponse.json(result);
   } catch (err: any) {
-    return NextResponse.json({ error: "Resume analysis failed", details: String(err?.message || err) }, { status: 500 });
+    return NextResponse.json(
+      { error: "Resume analysis failed", details: String(err?.message || err) },
+      { status: 500 }
+    );
   }
 }
