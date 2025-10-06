@@ -18,19 +18,22 @@ export interface Candidate {
   summary: string;
 
   // scoring
-  matchScore: number;        // 0–100
-  skillsEvidencePct: number; // 0–100
+  matchScore: number;        // 0..100
+  skillsEvidencePct: number; // 0..100
 
   // narrative
   strengths: string[];
   weaknesses: string[];
   gaps: string[];
   mentoringNeeds: string[];
+
+  // interview
   questions: string[];
 
-  // UX helpers
-  formatted?: string;          // preformatted Markdown text for "Copy"
-  domainMismatch?: boolean;    // if true → force matchScore=0 and hide narratives
+  // UX / safeguards
+  formatted?: string;            // pre-formatted clipboard text
+  domainMismatch?: boolean;      // true = different domain than JD
+  domainHints?: string[];        // short signature terms used for detection
 }
 
 export interface AnalysisResult {
