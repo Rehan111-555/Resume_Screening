@@ -48,10 +48,10 @@ export interface Candidate {
   // Domain control
   domainMismatch: boolean;      // true => treat as out-of-domain (force 0, hide extras)
 
-  // ---- OPTIONAL FIELDS ADDED TO FIX YOUR BUILD ----
-  matchedSkills?: string[];     // from LLM rubric (optional)
-  missingSkills?: string[];     // from LLM rubric (optional)
-  educationSummary?: string;    // from LLM rubric (optional)
+  // Optional fields from LLM rubric
+  matchedSkills?: string[];
+  missingSkills?: string[];
+  educationSummary?: string;
 }
 
 /** API result payload */
@@ -59,4 +59,5 @@ export interface AnalysisResult {
   candidates: Candidate[];
   errors?: { file: string; message: string }[];
   meta?: any;
+  jd?: any; // <-- allows your route to include { jd, candidates: ... }
 }
