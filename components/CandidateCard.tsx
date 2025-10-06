@@ -10,7 +10,11 @@ interface CandidateCardProps {
   onClick: () => void;
 }
 
-export default function CandidateCard({ candidate, isSelected, onClick }: CandidateCardProps) {
+export default function CandidateCard({
+  candidate,
+  isSelected,
+  onClick,
+}: CandidateCardProps) {
   const getScoreColor = (score: number) => {
     if (score >= 85) return 'text-green-700 bg-green-50 ring-1 ring-green-200';
     if (score >= 65) return 'text-yellow-700 bg-yellow-50 ring-1 ring-yellow-200';
@@ -29,9 +33,9 @@ export default function CandidateCard({ candidate, isSelected, onClick }: Candid
       <div className="flex justify-between items-start mb-3">
         <div className="min-w-0">
           <h3 className="font-semibold text-lg text-gray-900 truncate">{candidate.name}</h3>
-          <p className="text-gray-600 truncate">{candidate.title || '—'}</p>
+          <p className="text-gray-600 truncate">{candidate.title}</p>
         </div>
-        <div className="flex flex-col items-end gap-1">
+        <div className="flex items-center gap-2">
           <div
             className={`px-3 py-1 rounded-full font-semibold shrink-0 ${getScoreColor(
               candidate.matchScore
@@ -41,8 +45,11 @@ export default function CandidateCard({ candidate, isSelected, onClick }: Candid
             {candidate.matchScore}% match
           </div>
 
-          {candidate.domainMismatch && (
-            <div className="flex items-center text-[11px] px-2 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200">
+          {candidate.domainMismatch === true && (
+            <div
+              className="flex items-center text-xs px-2 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200"
+              title="Resume domain does not match the JD (questions suppressed)"
+            >
               <AlertTriangle className="h-3 w-3 mr-1" />
               Domain not matching
             </div>
@@ -68,7 +75,10 @@ export default function CandidateCard({ candidate, isSelected, onClick }: Candid
       <div className="mb-3">
         <div className="flex flex-wrap gap-1">
           {candidate.skills.slice(0, 6).map((skill, index) => (
-            <span key={`${skill}-${index}`} className="px-2 py-1 bg-indigo-50 text-indigo-700 text-xs rounded-full">
+            <span
+              key={`${skill}-${index}`}
+              className="px-2 py-1 bg-indigo-50 text-indigo-700 text-xs rounded-full"
+            >
               {skill}
             </span>
           ))}
