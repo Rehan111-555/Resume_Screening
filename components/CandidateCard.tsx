@@ -29,23 +29,24 @@ export default function CandidateCard({ candidate, isSelected, onClick }: Candid
       <div className="flex justify-between items-start mb-3">
         <div className="min-w-0">
           <h3 className="font-semibold text-lg text-gray-900 truncate">{candidate.name}</h3>
-          <p className="text-gray-600 truncate">{candidate.title}</p>
+          <p className="text-gray-600 max-w-[95%] whitespace-nowrap overflow-hidden text-ellipsis">
+            {candidate.title || '—'}
+          </p>
         </div>
 
-        <div className="flex items-center gap-2">
-          {candidate.domainMismatch && (
-            <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold bg-rose-50 text-rose-700 ring-1 ring-rose-200">
-              <AlertTriangle className="h-3 w-3 mr-1" /> Domain not matching
-            </span>
-          )}
+        <div className="flex flex-col items-end gap-1 shrink-0">
           <div
-            className={`px-3 py-1 rounded-full font-semibold shrink-0 ${getScoreColor(
-              candidate.matchScore
-            )}`}
+            className={`px-3 py-1 rounded-full font-semibold ${getScoreColor(candidate.matchScore)}`}
             aria-label={`Match score ${candidate.matchScore} percent`}
           >
             {candidate.matchScore}% match
           </div>
+          {candidate.domainNotMatching && (
+            <div className="flex items-center gap-1 text-xs bg-rose-50 text-rose-700 px-2 py-1 rounded-full">
+              <AlertTriangle className="w-3.5 h-3.5" />
+              Domain not matching
+            </div>
+          )}
         </div>
       </div>
 
@@ -64,13 +65,11 @@ export default function CandidateCard({ candidate, isSelected, onClick }: Candid
         </div>
       </div>
 
-      <div className="mb-3">
-        <div className="flex flex-wrap gap-1">
-          {candidate.skills.slice(0, 6).map((skill, index) => (
-            <span
-              key={`${skill}-${index}`}
-              className="px-2 py-1 bg-indigo-50 text-indigo-700 text-xs rounded-full"
-            >
+      {/* Keep skills tight to avoid overflow */}
+      <div className="mb-2">
+        <div className="flex flex-wrap gap-1 max-h-16 overflow-hidden">
+          {candidate.skills.slice(0, 6).map((skill, i) => (
+            <span key={`${skill}-${i}`} className="px-2 py-1 bg-indigo-50 text-indigo-700 text-xs rounded-full">
               {skill}
             </span>
           ))}
