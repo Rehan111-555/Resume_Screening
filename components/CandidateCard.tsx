@@ -8,12 +8,33 @@ function cx(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ");
 }
 
-export default function CandidateCard({ candidate }: { candidate: Candidate }) {
+type Props = {
+  candidate: Candidate;
+  /** highlight card selection (optional) */
+  isSelected?: boolean;
+  /** click handler (optional) */
+  onClick?: () => void;
+};
+
+export default function CandidateCard({ candidate, isSelected, onClick }: Props) {
   return (
-    <div className="rounded-2xl border border-gray-200 p-4 hover:shadow-sm transition">
+    <div
+      onClick={onClick}
+      role={onClick ? "button" : undefined}
+      className={cx(
+        "rounded-2xl border p-4 transition",
+        "hover:shadow-sm",
+        isSelected
+          ? "border-indigo-400 ring-2 ring-indigo-200 bg-indigo-50/40"
+          : "border-gray-200 bg-white"
+      )}
+      tabIndex={onClick ? 0 : -1}
+    >
       <div className="flex items-start justify-between">
         <div className="min-w-0">
-          <div className="font-semibold truncate">{candidate.name || "—"}</div>
+          <div className="font-semibold truncate">
+            {candidate.name || "—"}
+          </div>
           <div className="text-sm text-gray-500 truncate">
             {candidate.title || "—"}
           </div>
@@ -46,11 +67,12 @@ export default function CandidateCard({ candidate }: { candidate: Candidate }) {
 
       <div className="mt-3 grid grid-cols-3 gap-2">
         <div className="rounded-lg bg-gray-50 p-2 text-center">
-          <div className="text-xs text-gray-500">Skills & Evidence</div>
+          <div className="text-xs text-gray-500">Skills &amp; Evidence</div>
           <div className="font-semibold text-sm">
             {candidate.skillsEvidencePct || 0}%
           </div>
         </div>
+
         <div className="rounded-lg bg-gray-50 p-2 text-center">
           <div className="text-xs text-gray-500">Experience</div>
           <div className="font-semibold text-sm">
@@ -61,6 +83,7 @@ export default function CandidateCard({ candidate }: { candidate: Candidate }) {
               : "0 months"}
           </div>
         </div>
+
         <div className="rounded-lg bg-gray-50 p-2 text-center">
           <div className="text-xs text-gray-500">Education</div>
           <div className="font-semibold text-sm truncate">
