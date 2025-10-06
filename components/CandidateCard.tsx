@@ -1,55 +1,36 @@
-'use client';
+"use client";
 
-import type { Candidate } from '@/types';
-import { GraduationCap, Briefcase, HelpCircle, AlertTriangle } from 'lucide-react';
-import { formatExperience } from '@/utils/formatExperience';
+import { AlertTriangle } from "lucide-react";
+import type { Candidate } from "@/types";
+import clsx from "clsx";
 
-interface CandidateCardProps {
-  candidate: Candidate;
-  isSelected: boolean;
-  onClick: () => void;
-}
-
-export default function CandidateCard({
-  candidate,
-  isSelected,
-  onClick,
-}: CandidateCardProps) {
-  const getScoreColor = (score: number) => {
-    if (score >= 85) return 'text-green-700 bg-green-50 ring-1 ring-green-200';
-    if (score >= 65) return 'text-yellow-700 bg-yellow-50 ring-1 ring-yellow-200';
-    return 'text-red-700 bg-red-50 ring-1 ring-red-200';
-  };
-
+export default function CandidateCard({ candidate }: { candidate: Candidate }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`w-full text-left border rounded-2xl p-4 transition-all hover:shadow-md focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
-        isSelected ? 'border-indigo-500 bg-indigo-50/40 shadow-md' : 'border-gray-200 bg-white'
-      }`}
-      aria-pressed={isSelected}
-    >
-      <div className="flex justify-between items-start mb-3">
+    <div className="rounded-2xl border border-gray-200 p-4 hover:shadow-sm transition">
+      <div className="flex items-start justify-between">
         <div className="min-w-0">
-          <h3 className="font-semibold text-lg text-gray-900 truncate">{candidate.name}</h3>
-          <p className="text-gray-600 truncate">{candidate.title}</p>
+          <div className="font-semibold truncate">{candidate.name || "—"}</div>
+          <div className="text-sm text-gray-500 truncate">
+            {candidate.title || "—"}
+          </div>
         </div>
-        <div className="flex items-center gap-2">
+
+        <div className="ml-3 flex flex-col items-end">
           <div
-            className={`px-3 py-1 rounded-full font-semibold shrink-0 ${getScoreColor(
-              candidate.matchScore
-            )}`}
-            aria-label={`Match score ${candidate.matchScore} percent`}
+            className={clsx(
+              "text-xs px-2 py-0.5 rounded-full border",
+              candidate.matchScore >= 70
+                ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                : candidate.matchScore >= 40
+                ? "bg-amber-50 text-amber-700 border-amber-200"
+                : "bg-rose-50 text-rose-700 border-rose-200"
+            )}
           >
             {candidate.matchScore}% match
           </div>
 
-          {candidate.domainMismatch === true && (
-            <div
-              className="flex items-center text-xs px-2 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200"
-              title="Resume domain does not match the JD (questions suppressed)"
-            >
+          {candidate.domainMismatch && (
+            <div className="mt-1 flex items-center text-[11px] px-2 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200">
               <AlertTriangle className="h-3 w-3 mr-1" />
               Domain not matching
             </div>
@@ -57,45 +38,44 @@ export default function CandidateCard({
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-2 mb-3 text-sm">
-        <div className="text-center p-2 rounded-lg bg-blue-50 text-blue-700">
-          <div className="font-bold">{candidate.skillsEvidencePct}%</div>
-          <div className="text-xs">Skills & Evidence</div>
+      <div className="mt-3 grid grid-cols-3 gap-2">
+        <div className="rounded-lg bg-gray-50 p-2 text-center">
+          <div className="text-xs text-gray-500">Skills & Evidence</div>
+          <div className="font-semibold text-sm">{candidate.skillsEvidencePct || 0}%</div>
         </div>
-        <div className="flex items-center justify-center p-2 rounded-lg bg-emerald-50 text-emerald-700">
-          <Briefcase className="h-4 w-4 mr-2" />
-          {formatExperience(candidate.yearsExperience)}
+        <div className="rounded-lg bg-gray-50 p-2 text-center">
+          <div className="text-xs text-gray-500">Experience</div>
+          <div className="font-semibold text-sm">
+            {candidate.yearsExperience > 0 ? `${candidate.yearsExperience} ${candidate.yearsExperience === 1 ? "year" : "years"}` : "0 months"}
+          </div>
         </div>
-        <div className="flex items-center justify-center p-2 rounded-lg bg-purple-50 text-purple-700">
-          <GraduationCap className="h-4 w-4 mr-2" />
-          {candidate.education || '—'}
-        </div>
-      </div>
-
-      <div className="mb-3">
-        <div className="flex flex-wrap gap-1">
-          {candidate.skills.slice(0, 6).map((skill, index) => (
-            <span
-              key={`${skill}-${index}`}
-              className="px-2 py-1 bg-indigo-50 text-indigo-700 text-xs rounded-full"
-            >
-              {skill}
-            </span>
-          ))}
-          {candidate.skills.length > 6 && (
-            <span className="px-2 py-1 bg-gray-100 text-gray-600 text-xs rounded-full">
-              +{candidate.skills.length - 6} more
-            </span>
-          )}
+        <div className="rounded-lg bg-gray-50 p-2 text-center">
+          <div className="text-xs text-gray-500">Education</div>
+          <div className="font-semibold text-sm truncate">
+            {candidate.education || "—"}
+          </div>
         </div>
       </div>
 
-      {!candidate.domainMismatch && (
-        <div className="flex items-center text-indigo-600 text-sm">
-          <HelpCircle className="h-4 w-4 mr-1" />
-          Tailored interview questions in details
-        </div>
-      )}
-    </button>
+      <div className="mt-3 flex flex-wrap gap-1">
+        {(candidate.skills || []).slice(0, 8).map((s, i) => (
+          <span
+            key={i}
+            className="text-[11px] px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-100 truncate"
+          >
+            {s}
+          </span>
+        ))}
+        {(candidate.skills || []).length > 8 && (
+          <span className="text-[11px] px-2 py-0.5 rounded-full bg-gray-50 text-gray-600 border border-gray-100">
+            +{(candidate.skills || []).length - 8} more
+          </span>
+        )}
+      </div>
+
+      <div className="mt-2 text-xs text-indigo-600 hover:underline cursor-pointer">
+        Tailored interview questions in details
+      </div>
+    </div>
   );
 }
