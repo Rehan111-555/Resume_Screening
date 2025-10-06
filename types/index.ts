@@ -21,7 +21,7 @@ export interface Candidate {
   matchScore: number;
   skillsEvidencePct: number;
 
-  // narratives
+  // narrative
   strengths: string[];
   weaknesses: string[];
   gaps: string[];
@@ -29,11 +29,8 @@ export interface Candidate {
   questions: string[];
 
   // new
-  formatted?: string;           // exact formatted block for copy
-  domainMatch?: boolean;        // false => matchScore forced to 0
-  domainNote?: string;          // 'Domain not matching'
-  domainFromJD?: string[];      // anchors considered
-  domainFromResume?: string[];  // anchors matched
+  domainMismatch?: boolean;     // true => force 0% + hide extras
+  formatted?: string;           // pre-rendered MD block you want to copy/share
 }
 
 export interface AnalysisResult {
