@@ -1,236 +1,210 @@
-// components/CandidateDetail.tsx
-"use client";
+'use client';
 
-import type { Candidate } from "@/types";
-import { useState } from "react";
-import { X, Mail, Phone, MapPin, Clipboard } from "lucide-react";
+import type { Candidate } from '@/types';
+import { X, Download, Mail, Phone, MapPin, Clipboard } from 'lucide-react';
+import { useState } from 'react';
+import { formatExperience } from '@/utils/formatExperience';
 
-type Props = {
+interface Props {
   candidate: Candidate | null;
-  onClose?: () => void;
-};
+  isOpen: boolean;
+  onClose: () => void;
+}
 
-export default function CandidateDetail({ candidate, onClose }: Props) {
+export default function CandidateDetail({ candidate, isOpen, onClose }: Props) {
   const [copied, setCopied] = useState(false);
 
-  if (!candidate) return null;
-
-  // Safe guards for optional fields
-  const questions = Array.isArray(candidate.questions) ? candidate.questions : [];
-  const strengths = Array.isArray(candidate.strengths) ? candidate.strengths : [];
-  const weaknesses = Array.isArray(candidate.weaknesses) ? candidate.weaknesses : [];
-  const gaps = Array.isArray(candidate.gaps) ? candidate.gaps : [];
-  const mentoring = Array.isArray(candidate.mentoringNeeds) ? candidate.mentoringNeeds : [];
+  if (!isOpen || !candidate) return null;
 
   async function copyFormatted() {
     try {
-      const text = candidate.formatted || "";
+      const text = candidate?.formatted || "";
       if (!text) return;
       await navigator.clipboard.writeText(text);
       setCopied(true);
-      setTimeout(() => setCopied(false), 1400);
-    } catch {
-      // ignore
-    }
+      setTimeout(() => setCopied(false), 1500);
+    } catch {}
   }
 
-  const showAnalysis = !candidate.domainMismatch; // hide advanced sections if domain doesn't match
-
   return (
-    <div className="rounded-2xl bg-white shadow-xl ring-1 ring-black/5">
-      {/* Header */}
-      <div className="flex items-center justify-between gap-3 border-b px-5 py-4">
-        <div className="min-w-0">
-          <h2 className="truncate text-xl font-semibold text-gray-900">
-            {candidate.name || "Candidate"}
+    <div
+      className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="candidate-details-title"
+    >
+      <div className="bg-white rounded-2xl max-w-5xl w-full max-h-[90vh] overflow-y-auto shadow-2xl">
+        <div className="flex justify-between items-center p-6 border-b">
+          <h2 id="candidate-details-title" className="text-2xl font-bold text-gray-900">
+            Candidate Details
           </h2>
-          <p className="truncate text-sm text-gray-600">{candidate.title}</p>
-        </div>
-
-        <div className="flex items-center gap-2">
-          {candidate.formatted && (
+          <div className="flex items-center gap-3">
             <button
               onClick={copyFormatted}
-              className="inline-flex items-center rounded-lg border border-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50"
+              className="flex items-center gap-1 text-indigo-600 hover:text-indigo-800"
               title="Copy formatted summary"
             >
-              <Clipboard className="mr-1.5 h-4 w-4" />
+              <Clipboard className="h-5 w-5" />
               {copied ? "Copied" : "Copy"}
             </button>
+            <button
+              onClick={onClose}
+              className="text-gray-400 hover:text-gray-600 transition-colors"
+              aria-label="Close"
+            >
+              <X className="h-6 w-6" />
+            </button>
+          </div>
+        </div>
+
+        <div className="p-6 space-y-6">
+          {/* Basic Info */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div>
+              <h3 className="text-lg font-semibold mb-4">Personal Information</h3>
+              <div className="space-y-3 text-gray-700">
+                <div className="flex items-center">
+                  <Mail className="h-5 w-5 mr-3 text-blue-500" />
+                  <span>{candidate.email || 'Not specified'}</span>
+                </div>
+                <div className="flex items-center">
+                  <Phone className="h-5 w-5 mr-3 text-green-500" />
+                  <span>{candidate.phone || 'Not specified'}</span>
+                </div>
+                <div className="flex items-center">
+                  <MapPin className="h-5 w-5 mr-3 text-red-500" />
+                  <span>{candidate.location || 'Not specified'}</span>
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <h3 className="text-lg font-semibold mb-4">Professional Summary</h3>
+              <p className="text-gray-700 leading-relaxed">{candidate.summary || "—"}</p>
+            </div>
+          </div>
+
+          {/* Match Breakdown */}
+          <div>
+            <h3 className="text-lg font-semibold mb-4">Match Breakdown</h3>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="text-center p-4 bg-indigo-50 rounded-lg">
+                <div className="text-2xl font-bold text-indigo-700">{candidate.matchScore}%</div>
+                <div className="text-sm text-indigo-700">Overall Match</div>
+              </div>
+              <div className="text-center p-4 bg-emerald-50 rounded-lg">
+                <div className="text-xl font-bold text-emerald-700">
+                  {formatExperience(candidate.yearsExperience)}
+                </div>
+                <div className="text-sm text-emerald-700">Experience</div>
+              </div>
+              <div className="text-center p-4 bg-blue-50 rounded-lg">
+                <div className="text-2xl font-bold text-blue-700">{candidate.skillsEvidencePct}%</div>
+                <div className="text-sm text-blue-700">Skills & Evidence</div>
+              </div>
+              <div className="text-center p-4 bg-purple-50 rounded-lg">
+                <div className="text-xl font-bold text-purple-700">{candidate.education || '—'}</div>
+                <div className="text-sm text-purple-700">Education</div>
+              </div>
+            </div>
+          </div>
+
+          {/* Skills */}
+          <div>
+            <h3 className="text-lg font-semibold mb-4">Skills</h3>
+            <div className="flex flex-wrap gap-2">
+              {(candidate.skills || []).map((skill, index) => (
+                <span
+                  key={`${skill}-${index}`}
+                  className="px-3 py-2 bg-indigo-50 text-indigo-700 rounded-full text-sm"
+                >
+                  {skill}
+                </span>
+              ))}
+              {(!candidate.skills || candidate.skills.length === 0) && <span>—</span>}
+            </div>
+          </div>
+
+          {/* Questions only if in-domain */}
+          {!candidate.domainMismatch && (candidate.questions?.length || 0) > 0 && (
+            <div className="mt-6">
+              <h3 className="mb-2 text-sm font-semibold text-gray-700">
+                AI Interview Questions
+              </h3>
+              <ul className="space-y-2">
+                {candidate.questions!.map((q, i) => (
+                  <li key={i} className="p-3 bg-indigo-50 rounded text-indigo-900">{q}</li>
+                ))}
+              </ul>
+            </div>
           )}
+
+          {/* Analysis */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div>
+              <h3 className="text-lg font-semibold mb-4 text-emerald-600">Strengths</h3>
+              <ul className="space-y-2">
+                {(candidate.strengths || []).map((s, i) => (
+                  <li key={`${s}-${i}`} className="flex items-start">
+                    <div className="w-2 h-2 bg-emerald-500 rounded-full mt-2 mr-3 flex-shrink-0" />
+                    <span className="text-gray-700">{s}</span>
+                  </li>
+                ))}
+                {(!candidate.strengths || candidate.strengths.length === 0) && <li>—</li>}
+              </ul>
+            </div>
+            <div>
+              <h3 className="text-lg font-semibold mb-4 text-rose-600">Areas for Improvement</h3>
+              <ul className="space-y-2">
+                {(candidate.weaknesses || []).map((w, i) => (
+                  <li key={`${w}-${i}`} className="flex items-start">
+                    <div className="w-2 h-2 bg-rose-500 rounded-full mt-2 mr-3 flex-shrink-0" />
+                    <span className="text-gray-700">{w}</span>
+                  </li>
+                ))}
+                {(!candidate.weaknesses || candidate.weaknesses.length === 0) && <li>—</li>}
+              </ul>
+            </div>
+          </div>
+
+          {/* Gaps & Mentoring */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div>
+              <h3 className="text-lg font-semibold mb-4 text-amber-600">Identified Gaps</h3>
+              <ul className="space-y-2">
+                {(candidate.gaps || []).map((g, i) => (
+                  <li key={`${g}-${i}`} className="flex items-start">
+                    <div className="w-2 h-2 bg-amber-500 rounded-full mt-2 mr-3 flex-shrink-0" />
+                    <span className="text-gray-700">{g}</span>
+                  </li>
+                ))}
+                {(!candidate.gaps || candidate.gaps.length === 0) && <li>—</li>}
+              </ul>
+            </div>
+            <div>
+              <h3 className="text-lg font-semibold mb-4 text-fuchsia-600">Mentoring Needs</h3>
+              <ul className="space-y-2">
+                {(candidate.mentoringNeeds || []).map((m, i) => (
+                  <li key={`${m}-${i}`} className="flex items-start">
+                    <div className="w-2 h-2 bg-fuchsia-500 rounded-full mt-2 mr-3 flex-shrink-0" />
+                    <span className="text-gray-700">{m}</span>
+                  </li>
+                ))}
+                {(!candidate.mentoringNeeds || candidate.mentoringNeeds.length === 0) && <li>—</li>}
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex justify-end p-6 border-t">
           <button
-            onClick={onClose}
-            className="rounded-lg p-1.5 text-gray-500 hover:bg-gray-100"
-            aria-label="Close"
+            className="flex items-center px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
+            onClick={copyFormatted}
           >
-            <X className="h-5 w-5" />
+            <Download className="h-4 w-4 mr-2" />
+            Copy as Text
           </button>
         </div>
-      </div>
-
-      {/* Content */}
-      <div className="space-y-6 px-5 py-5">
-        {/* Personal Info + Summary */}
-        <div className="grid gap-6 md:grid-cols-2">
-          <div>
-            <h3 className="mb-2 text-sm font-semibold text-gray-700">Personal Information</h3>
-            <div className="space-y-2 text-sm text-gray-700">
-              <div className="flex items-center">
-                <Mail className="mr-2 h-4 w-4 text-blue-600" />
-                <span>{candidate.email || "—"}</span>
-              </div>
-              <div className="flex items-center">
-                <Phone className="mr-2 h-4 w-4 text-emerald-600" />
-                <span>{candidate.phone || "—"}</span>
-              </div>
-              <div className="flex items-center">
-                <MapPin className="mr-2 h-4 w-4 text-rose-600" />
-                <span>{candidate.location || "—"}</span>
-              </div>
-            </div>
-          </div>
-
-          <div>
-            <h3 className="mb-2 text-sm font-semibold text-gray-700">Professional Summary</h3>
-            <p className="whitespace-pre-line text-sm leading-6 text-gray-800">
-              {candidate.summary || "—"}
-            </p>
-          </div>
-        </div>
-
-        {/* Match Breakdown */}
-        <div>
-          <h3 className="mb-2 text-sm font-semibold text-gray-700">Match Breakdown</h3>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <div className="rounded-lg bg-indigo-50 p-3 text-center">
-              <div className="text-2xl font-bold text-indigo-700">
-                {candidate.domainMismatch ? 0 : candidate.matchScore}%
-              </div>
-              <div className="text-sm text-indigo-800">Overall Match</div>
-            </div>
-            <div className="rounded-lg bg-emerald-50 p-3 text-center">
-              <div className="text-lg font-semibold text-emerald-700">
-                {Number.isFinite(candidate.yearsExperience)
-                  ? `${Math.max(0, candidate.yearsExperience).toFixed(1)} yrs`
-                  : "—"}
-              </div>
-              <div className="text-sm text-emerald-800">Experience</div>
-            </div>
-            <div className="rounded-lg bg-blue-50 p-3 text-center">
-              <div className="text-2xl font-bold text-blue-700">
-                {candidate.domainMismatch ? 0 : candidate.skillsEvidencePct}%
-              </div>
-              <div className="text-sm text-blue-800">Skills & Evidence</div>
-            </div>
-            <div className="rounded-lg bg-purple-50 p-3 text-center">
-              <div className="text-lg font-semibold text-purple-700">
-                {candidate.education || "—"}
-              </div>
-              <div className="text-sm text-purple-800">Education</div>
-            </div>
-          </div>
-        </div>
-
-        {/* Skills */}
-        <div>
-          <h3 className="mb-2 text-sm font-semibold text-gray-700">Skills</h3>
-          <div className="flex flex-wrap gap-2">
-            {(candidate.skills || []).slice(0, 40).map((skill, i) => (
-              <span
-                key={`${skill}-${i}`}
-                className="rounded-full bg-indigo-50 px-2.5 py-1 text-xs text-indigo-800"
-                title={skill}
-              >
-                {skill}
-              </span>
-            ))}
-            {!candidate.skills?.length && <span className="text-sm text-gray-500">—</span>}
-          </div>
-        </div>
-
-        {/* If domain mismatched, stop here with a clear message */}
-        {candidate.domainMismatch && (
-          <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">
-            Domain not matching. This candidate’s background doesn’t align with the JD domain,
-            so deeper analysis and questions are intentionally omitted.
-          </div>
-        )}
-
-        {/* Strengths / Weaknesses */}
-        {showAnalysis && (
-          <div className="grid gap-6 md:grid-cols-2">
-            <div>
-              <h3 className="mb-2 text-sm font-semibold text-emerald-700">Strengths</h3>
-              {strengths.length ? (
-                <ul className="space-y-2">
-                  {strengths.map((s, i) => (
-                    <li key={i} className="text-sm text-gray-800">• {s}</li>
-                  ))}
-                </ul>
-              ) : (
-                <div className="text-sm text-gray-500">—</div>
-              )}
-            </div>
-            <div>
-              <h3 className="mb-2 text-sm font-semibold text-rose-700">Areas for Improvement</h3>
-              {weaknesses.length ? (
-                <ul className="space-y-2">
-                  {weaknesses.map((w, i) => (
-                    <li key={i} className="text-sm text-gray-800">• {w}</li>
-                  ))}
-                </ul>
-              ) : (
-                <div className="text-sm text-gray-500">—</div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Gaps & Mentoring */}
-        {showAnalysis && (
-          <div className="grid gap-6 md:grid-cols-2">
-            <div>
-              <h3 className="mb-2 text-sm font-semibold text-amber-700">Identified Gaps</h3>
-              {gaps.length ? (
-                <ul className="space-y-2">
-                  {gaps.map((g, i) => (
-                    <li key={i} className="text-sm text-gray-800">• {g}</li>
-                  ))}
-                </ul>
-              ) : (
-                <div className="text-sm text-gray-500">—</div>
-              )}
-            </div>
-            <div>
-              <h3 className="mb-2 text-sm font-semibold text-fuchsia-700">Mentoring Needs</h3>
-              {mentoring.length ? (
-                <ul className="space-y-2">
-                  {mentoring.map((m, i) => (
-                    <li key={i} className="text-sm text-gray-800">• {m}</li>
-                  ))}
-                </ul>
-              ) : (
-                <div className="text-sm text-gray-500">—</div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* AI Interview Questions */}
-        {showAnalysis && questions.length > 0 && (
-          <div className="mt-2">
-            <h3 className="mb-2 text-sm font-semibold text-gray-700">
-              AI Interview Questions
-            </h3>
-            <ul className="space-y-2">
-              {questions.map((q, i) => (
-                <li key={i} className="rounded-md bg-indigo-50 p-2 text-sm text-indigo-900">
-                  {q}
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
       </div>
     </div>
   );
