@@ -1,3 +1,4 @@
+// app/api/analyze-resumes/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { convert } from "html-to-text";
@@ -7,39 +8,45 @@ import mammoth from "mammoth";
 import {
   llmExtractProfile,
   llmDeriveKeywords,
+  scoreHeuristically,
   llmGradeCandidate,
-  estimateYears,
-  eduFit,
   mapEduLevel,
+  eduFit,
   clamp01,
-  domainOverlap,
-  skillsEvidencePctFromLists,
-  cleanTokens,
+  estimateYears,
   type JDKeywords,
 } from "@/utils/geminiClient.server";
 
-import type { Candidate, JobRequirements } from "@/types";
+import type { AnalysisResult, Candidate, JobRequirements } from "@/types";
 
-async function readFileToText(file: File): Promise<string> {
-  const buf = Buffer.from(await file.arrayBuffer());
-  const name = file.name.toLowerCase();
+/** ───────────── Helpers to read text from uploaded files ───────────── */
 
-  if (name.endsWith(".pdf")) {
-    const res = await pdfParse(buf);
-    return res.text || "";
-  }
-  if (name.endsWith(".docx")) {
-    const res = await mammoth.extractRawText({ buffer: buf });
-    return res.value || "";
-  }
-  if (name.endsWith(".html") || name.endsWith(".htm")) {
-    return convert(buf.toString("utf8"));
-  }
-  if (name.endsWith(".txt") || name.endsWith(".md") || name.endsWith(".rtf")) {
-    return buf.toString("utf8");
+async function fileToText(f: File): Promise<string> {
+  const type = (f.type || "").toLowerCase();
+  const buf = Buffer.from(await f.arrayBuffer());
+
+  // PDF
+  if (type.includes("pdf") || f.name.toLowerCase().endsWith(".pdf")) {
+    const out = await pdfParse(buf);
+    return (out.text || "").trim();
   }
 
-  // fallback: try utf8
+  // DOCX
+  if (
+    type.includes("officedocument.wordprocessingml.document") ||
+    f.name.toLowerCase().endsWith(".docx")
+  ) {
+    const out = await mammoth.extractRawText({ buffer: buf });
+    return (out.value || "").trim();
+  }
+
+  // HTML
+  if (type.includes("html") || f.name.toLowerCase().endsWith(".html")) {
+    const html = buf.toString("utf8");
+    return convert(html, { selectors: [{ selector: "a", options: { ignoreHref: true } }] }).trim();
+  }
+
+  // Plain text as fallback
   return buf.toString("utf8");
 }
 
@@ -51,197 +58,176 @@ function baseCandidate(id: string): Candidate {
     phone: "",
     location: "",
     title: "",
-    yearsExperience: 0,
-    education: "",
-    skills: [],
     summary: "",
+    skills: [],
+    education: "",
+    yearsExperience: 0,
+
+    // list card scoring
     matchScore: 0,
     skillsEvidencePct: 0,
+    yearsScore: 0,  // <- required in Candidate
+    eduScore: 0,    // <- required in Candidate
+
+    // flags
     domainMismatch: false,
+
+    // optional detail fields (can stay empty if domain mismatched)
+    formatted: "",
     questions: [],
     strengths: [],
     weaknesses: [],
     gaps: [],
+    mentoringNeeds: [],
+    matchedSkills: [],
+    missingSkills: [],
+    educationSummary: "",
   };
 }
 
-function computeMatch(
-  jd: JobRequirements,
-  jdKw: JDKeywords,
-  resumeText: string,
-  years: number,
-  edu: string,
-  rubricScore: number,
-  heuristicCoverage: number
-) {
-  const { ratio: domainRatio } = domainOverlap(jdKw, resumeText);
-  const eduScore = eduFit(jd.educationLevel, edu); // 0..1
-  const yearsReq = jd.minYearsExperience || 0;
-  const yearsScore = yearsReq ? clamp01(years / yearsReq) : 1; // 0..1
-  const rubric = rubricScore / 100; // 0..1
-
-  // If domain overlap is too low, treat as mismatch (return flag, score=0)
-  const mismatch = domainRatio < 0.2;
-
-  // Blend (weights can be tuned)
-  const blended =
-    0.40 * domainRatio +
-    0.25 * heuristicCoverage +
-    0.20 * rubric +
-    0.10 * yearsScore +
-    0.05 * eduScore;
-
-  return {
-    domainMismatch: mismatch,
-    matchScore: mismatch ? 0 : Math.round(100 * clamp01(blended)),
-  };
+/** ───────────── Domain-mismatch gating ─────────────
+ * If the resume clearly does not match the JD domain,
+ * we zero the scores and keep details empty.
+ */
+function isDomainMismatch(jdKw: JDKeywords, resumeSkills: string[], heurCoverage: number, rubricDomainScore: number | undefined) {
+  // Heuristic + rubric check:
+  // - very low heuristic coverage, AND
+  // - rubric thinks domain knowledge is very low too
+  const lowHeur = heurCoverage < 0.12; // pretty conservative threshold
+  const lowRubric = rubricDomainScore !== undefined ? rubricDomainScore < 0.2 : false;
+  return lowHeur && lowRubric;
 }
-
-export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
   try {
     const form = await req.formData();
-    const jdTitle = String(form.get("jdTitle") || "");
-    const jdDescription = String(form.get("jdDescription") || "");
-    const eduLevel = String(form.get("educationLevel") || "");
-    const minYears = Number(form.get("minYearsExperience") || "0");
 
-    const jd: JobRequirements = {
-      title: jdTitle,
-      description: jdDescription,
-      educationLevel: eduLevel,
-      minYearsExperience: isNaN(minYears) ? 0 : minYears,
-    };
-
-    // read files
-    const files = form.getAll("files").filter((f): f is File => f instanceof File);
-    const texts: { id: string; name: string; text: string }[] = [];
-    for (const f of files) {
-      const text = await readFileToText(f);
-      texts.push({
-        id: crypto.randomUUID(),
-        name: f.name,
-        text,
-      });
+    const jdJson = form.get("jobRequirements");
+    if (!jdJson || typeof jdJson !== "string") {
+      return NextResponse.json({ error: "Missing jobRequirements" }, { status: 400 });
     }
-    if (!texts.length) {
-      return NextResponse.json({ candidates: [], jd }, { status: 200 });
+    const jd: JobRequirements = JSON.parse(jdJson);
+
+    const files: File[] = [];
+    for (const value of form.values()) {
+      if (value instanceof File) files.push(value);
+    }
+    if (!files.length) {
+      return NextResponse.json({ error: "No resumes uploaded" }, { status: 400 });
     }
 
-    // derive JD keywords once
-    const jdKw = await llmDeriveKeywords(`${jd.title}\n\n${jd.description}`);
+    // Derive JD keywords once
+    const keywords = await llmDeriveKeywords(jd.description || "");
 
-    const candidates: Candidate[] = [];
-    for (const r of texts) {
-      const cand = baseCandidate(r.id);
+    const outCandidates: Candidate[] = [];
 
-      // 1) Extract profile via LLM
-      const prof = await llmExtractProfile(r.text);
-      cand.name = String(prof.name || "");
-      cand.email = String(prof.email || "");
-      cand.phone = String(prof.phone || "");
-      cand.location = String(prof.location || "");
-      cand.title = String(prof.headline || prof.title || "");
-      cand.summary = String(prof.summary || "");
-      cand.skills = cleanTokens(Array.isArray(prof.skills) ? prof.skills : []);
-      cand.education = mapEduLevel(
-        Array.isArray(prof.education) && prof.education[0]?.degree
-          ? prof.education[0].degree
-          : String(prof.educationSummary || "")
+    for (const file of files) {
+      const id = crypto.randomUUID();
+      const candidate = baseCandidate(id);
+
+      const text = await fileToText(file);
+
+      // 1) LLM profile extraction (clean parse of resume)
+      const profile = await llmExtractProfile(text);
+
+      // fill basics if present
+      candidate.name = (profile.name || "").toString();
+      candidate.email = (profile.email || "").toString();
+      candidate.phone = (profile.phone || "").toString();
+      candidate.location = (profile.location || "").toString();
+      candidate.title = (profile.headline || profile.title || "").toString();
+      candidate.summary = (profile.summary || "").toString();
+      candidate.skills = Array.isArray(profile.skills) ? profile.skills.map((s: any) => String(s || "")) : [];
+      candidate.education = (profile.educationSummary || profile.education?.map?.((e: any) => e?.degree)?.join(", ") || "").toString();
+
+      // years: trust profile first, else estimate heuristically from resume text
+      const yearsFromProfile = Number(profile.yearsExperience || 0);
+      const yearsHeur = estimateYears(text);
+      candidate.yearsExperience = Number.isFinite(yearsFromProfile) && yearsFromProfile > 0 ? yearsFromProfile : yearsHeur;
+
+      // 2) Heuristic keyword coverage
+      const heur = scoreHeuristically(text, keywords);
+      candidate.skillsEvidencePct = Math.round(100 * clamp01(heur.coverage));
+
+      // 3) Rubric grading (deterministic)
+      const rubric = await llmGradeCandidate(jd.description || "", text);
+
+      // domain mismatch check
+      const domainMismatch = isDomainMismatch(
+        keywords,
+        candidate.skills,
+        heur.coverage,
+        rubric?.breakdown?.domainKnowledge
       );
+      candidate.domainMismatch = domainMismatch;
 
-      // 2) Years (prefer structured, else heuristic)
-      const yearsStructured = Number(prof.yearsExperience || 0);
-      const yearsHeur = estimateYears(r.text);
-      cand.yearsExperience =
-        !isNaN(yearsStructured) && yearsStructured > 0
-          ? yearsStructured
-          : yearsHeur;
+      // 4) Scores
+      // yearsScore vs JD min
+      const needYears = Number(jd.minYearsExperience || 0);
+      const yearsRatio = needYears > 0 ? clamp01(candidate.yearsExperience / needYears) : 1;
+      candidate.yearsScore = Math.round(100 * yearsRatio);
 
-      // 3) Heuristic coverage & evidence %
-      const { coverage } = await (async () => {
-        const { scoreHeuristically } = await import(
-          "@/utils/geminiClient.server"
-        );
-        return scoreHeuristically(r.text, jdKw);
-      })();
-      cand.skillsEvidencePct = skillsEvidencePctFromLists(r.text, jdKw);
+      // eduScore vs JD level
+      const requiredEdu = mapEduLevel(jd.educationLevel || "");
+      const haveEdu = mapEduLevel(candidate.education || rubric?.educationSummary || "");
+      candidate.eduScore = Math.round(100 * clamp01(eduFit(requiredEdu, haveEdu)));
 
-      // 4) LLM rubric (only if not a domain mismatch later)
-      let rubricScore = 0;
-      let rubric: any = null;
+      // overall score (blend rubric + heuristic)
+      const rubricScore = clamp01(Number(rubric?.score || 0) / 100);
+      const blend = clamp01(0.65 * rubricScore + 0.35 * heur.coverage);
+      candidate.matchScore = domainMismatch ? 0 : Math.round(100 * blend);
 
-      // compute preliminary domainRatio to decide mismatch
-      const { ratio: preliminaryDomainRatio } = domainOverlap(jdKw, r.text);
-      const isPreMismatch = preliminaryDomainRatio < 0.2;
+      // 5) Detail info (only if not domain mismatch)
+      if (!domainMismatch) {
+        candidate.questions = Array.isArray(rubric?.questions) ? rubric.questions.slice(0, 8) : [];
+        candidate.strengths = Array.isArray(rubric?.strengths) ? rubric.strengths : [];
+        candidate.weaknesses = Array.isArray(rubric?.weaknesses) ? rubric.weaknesses : [];
+        candidate.matchedSkills = Array.isArray(rubric?.matchedSkills) ? rubric.matchedSkills : [];
+        candidate.missingSkills = Array.isArray(rubric?.missingSkills) ? rubric.missingSkills : [];
+        candidate.educationSummary = (rubric?.educationSummary || haveEdu || "").toString();
 
-      if (!isPreMismatch) {
-        rubric = await llmGradeCandidate(`${jd.title}\n\n${jd.description}`, r.text);
-        rubricScore = Number(rubric?.score || 0);
-      }
-
-      // 5) Final match & flags
-      const { domainMismatch, matchScore } = computeMatch(
-        jd,
-        jdKw,
-        r.text,
-        cand.yearsExperience,
-        cand.education,
-        rubricScore,
-        coverage
-      );
-      cand.domainMismatch = domainMismatch;
-      cand.matchScore = matchScore;
-
-      if (!domainMismatch && rubric) {
-        cand.questions = Array.isArray(rubric.questions)
-          ? rubric.questions.slice(0, 8)
-          : [];
-        cand.strengths = cleanTokens(
-          Array.isArray(rubric.strengths) ? rubric.strengths : []
-        ).slice(0, 10);
-        cand.weaknesses = cleanTokens(
-          Array.isArray(rubric.weaknesses) ? rubric.weaknesses : []
-        ).slice(0, 10);
-
-        // turn missingSkills into “gaps”, cleaned
-        cand.gaps = cleanTokens(
-          Array.isArray(rubric.missingSkills) ? rubric.missingSkills : []
-        ).slice(0, 12);
+        // identified gaps: prefer heuristic "must" missing + rubric missingSkills
+        const mustMissing = heur.missing || [];
+        const rubricMissing = Array.isArray(rubric?.missingSkills) ? rubric.missingSkills : [];
+        const gaps = new Set<string>([...mustMissing, ...rubricMissing].map((s) => String(s || "")));
+        candidate.gaps = Array.from(gaps);
       } else {
-        // mismatched domain: keep it concise and neutral
-        cand.questions = [];
-        cand.strengths = [];
-        cand.weaknesses = [];
-        cand.gaps = [];
+        // ensure empties when mismatched
+        candidate.questions = [];
+        candidate.strengths = [];
+        candidate.weaknesses = [];
+        candidate.matchedSkills = [];
+        candidate.missingSkills = [];
+        candidate.gaps = [];
+        candidate.educationSummary = haveEdu || "";
       }
 
-      // Optional: a single blob to copy in modal
-      cand.formatted = [
-        `## Candidate Details — ${cand.name || r.name}`,
+      // formatted text for the Copy button in detail modal (optional)
+      candidate.formatted = [
+        `## Candidate Details — **${candidate.name || file.name}**`,
         ``,
         `**Personal Information**`,
-        `- Email: ${cand.email || "Not specified"}`,
-        `- Phone: ${cand.phone || "Not specified"}`,
-        `- Location: ${cand.location || "Not specified"}`,
+        `* Email: ${candidate.email || "Not specified"}`,
+        `* Phone: ${candidate.phone || "Not specified"}`,
+        `* Location: ${candidate.location || "Not specified"}`,
         ``,
         `**Professional Summary**`,
-        cand.summary || "Not specified",
+        candidate.summary || "—",
+        ``,
+        `**Match Breakdown**`,
+        `* **Overall Match:** ${candidate.matchScore}%`,
+        `* **Experience:** ${candidate.yearsExperience ? `${candidate.yearsExperience} year${candidate.yearsExperience > 1 ? "s" : ""}` : "—"}`,
+        `* **Skills & Evidence:** ${candidate.skillsEvidencePct}%`,
+        `* **Education:** ${haveEdu || "—"}`,
       ].join("\n");
 
-      candidates.push(cand);
+      outCandidates.push(candidate);
     }
 
-    // sort by matchScore desc
-    candidates.sort((a, b) => b.matchScore - a.matchScore);
-
-    return NextResponse.json({ candidates, jd }, { status: 200 });
+    const payload: AnalysisResult = { jd, candidates: outCandidates };
+    return NextResponse.json(payload, { status: 200 });
   } catch (e: any) {
     console.error(e);
-    return NextResponse.json(
-      { error: String(e?.message || e) },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: e?.message || "Failed to analyze" }, { status: 500 });
   }
 }
