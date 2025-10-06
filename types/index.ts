@@ -18,8 +18,8 @@ export interface Candidate {
   summary: string;
 
   // scoring
-  matchScore: number;
-  skillsEvidencePct: number;
+  matchScore: number;        // 0–100
+  skillsEvidencePct: number; // 0–100
 
   // narrative
   strengths: string[];
@@ -28,9 +28,9 @@ export interface Candidate {
   mentoringNeeds: string[];
   questions: string[];
 
-  // new
-  domainMismatch?: boolean;     // true => force 0% + hide extras
-  formatted?: string;           // pre-rendered MD block you want to copy/share
+  // UX helpers
+  formatted?: string;          // preformatted Markdown text for "Copy"
+  domainMismatch?: boolean;    // if true → force matchScore=0 and hide narratives
 }
 
 export interface AnalysisResult {
