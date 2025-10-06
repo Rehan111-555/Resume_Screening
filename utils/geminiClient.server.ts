@@ -4,6 +4,7 @@ import {
   HarmCategory,
 } from "@google/generative-ai";
 
+/** ───────────────────────── Setup ───────────────────────── */
 const key = process.env.GOOGLE_AI_API_KEY;
 if (!key) throw new Error("Missing GOOGLE_AI_API_KEY in .env.local");
 const genAI = new GoogleGenerativeAI(key);
@@ -41,7 +42,7 @@ async function pickModel(): Promise<ModelId> {
     try {
       const m = genAI.getGenerativeModel({
         model: id,
-        generationConfig: { temperature: 0, maxOutputTokens: 8, responseMimeType: "text/plain" },
+        generationConfig: { temperature: 0.1, maxOutputTokens: 8, responseMimeType: "text/plain" },
       });
       await withRetry(() => m.generateContent("ping"), `probe ${id}`);
       cachedModelId = id;
@@ -51,6 +52,7 @@ async function pickModel(): Promise<ModelId> {
   throw new Error("No enabled Gemini model (enable gemini-2.5-flash or gemini-2.5-pro).");
 }
 
+/** ─────────────────────── Safety / JSON ─────────────────── */
 const safetySettings = [
   { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
   { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
@@ -75,7 +77,7 @@ function j<T = any>(raw: string): T | null {
   return null;
 }
 
-/** Resume profile extraction */
+/** ───────────────────── Resume profile LLM ───────────────── */
 export async function llmExtractProfile(resumeText: string) {
   const prompt =
 `Extract a clean JSON RESUME PROFILE from the following resume text. Be concise but complete.
@@ -99,12 +101,12 @@ Return ONLY JSON:
 
 RESUME:
 """${resumeText.slice(0, 16000)}"""`;
-  const model = await jsonModel(0); // deterministic
+  const model = await jsonModel(0); // deterministic for stability
   const res = await withRetry(() => model.generateContent(prompt), "extract-profile");
   return j<any>(res.response.text()) || {};
 }
 
-/** JD → keywords (role agnostic) */
+/** ───────────────────── JD → keywords (role agnostic) ───────────────────── */
 export type JDKeywords = {
   must: { name: string; synonyms: string[] }[];
   nice: { name: string; synonyms: string[] }[];
@@ -178,6 +180,7 @@ JOB DESCRIPTION:
   const res = await withRetry(() => model.generateContent(prompt), "jd-keywords");
   let out = j<JDKeywords>(res.response.text());
 
+  // fallback to local extractor if model returns nothing
   if (!out || (!out.must?.length && !out.nice?.length)) {
     const terms = topTermsFromJD(jdText, 20);
     const must = terms.slice(0, 10).map(name => ({ name, synonyms: localSynonyms(name) }));
@@ -203,11 +206,11 @@ JOB DESCRIPTION:
   return out;
 }
 
-/** Heuristic fuzzy scoring */
+/** ───────────── Heuristic fuzzy scoring over resume text ───────────── */
 export type HeuristicScore = {
-  coverage: number;
+  coverage: number;    // 0..1
   matched: string[];
-  missing: string[];
+  missing: string[];   // must only
 };
 function norm(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9\+\.\-#& ]+/g, " ").replace(/\s+/g, " ").trim();
@@ -218,6 +221,7 @@ function fuzzyContains(text: string, phrase: string): boolean {
   if (!p) return false;
   if (T.includes(` ${p} `)) return true;
   if (T.includes(p)) return true;
+  // simple char-tolerant (lev<=1)
   const L = p.length;
   for (let i = 0; i <= T.length - L; i++) {
     let d = 0; for (let j = 0; j < L && d <= 1; j++) if (T[i + j] !== p[j]) d++;
@@ -242,7 +246,7 @@ export function scoreHeuristically(resumeText: string, kw: JDKeywords): Heuristi
   return { coverage, matched: Array.from(matched), missing };
 }
 
-/** Human rubric (deterministic) */
+/** ───────────── LLM human rubric (blended) ───────────── */
 export async function llmGradeCandidate(jdText: string, resumeText: string) {
   const prompt =
 `You are a senior recruiter assessing a candidate vs a JOB DESCRIPTION.
@@ -258,7 +262,7 @@ Return ONLY JSON:
   "weaknesses": ["..."],
   "yearsExperienceEstimate": 0,
   "educationSummary": "",
-  "questions": ["..."]
+  "questions": ["..."]      // 5–6 tailored questions for THIS candidate vs THIS JD
 }
 
 JOB DESCRIPTION:
@@ -277,35 +281,23 @@ RESUME:
   if (!Array.isArray(out.weaknesses)) out.weaknesses = [];
   return out;
 }
-/** ───────────── Domain mismatch detection ─────────────
- * We decide “domain match” by (a) JD tokens vs resume tokens overlap
- * AND (b) heuristic skills coverage. If there’s almost no overlap AND
- * coverage is very low, we mark as not matching the domain.
- */
-export function detectDomainMismatch(
-  jdText: string,
-  resumeText: string,
-  hCoverage: number
-): boolean {
-  const takeWords = (s: string) =>
-    (s || "")
-      .toLowerCase()
-      .replace(/[^a-z0-9+.#& ]+/g, " ")
-      .split(/\s+/)
-      .filter(Boolean);
 
-  const jdWords = new Set(takeWords(jdText));
-  const cvWords = new Set(takeWords(resumeText));
-
-  // Simple overlap measure (unique words)
-  let overlap = 0;
-  for (const w of cvWords) if (jdWords.has(w)) overlap++;
-
-  const overlapRatio = overlap / Math.max(1, jdWords.size);
-
-  // Thresholds are strict on purpose to avoid false zeros
-  // If extremely low JD↔CV overlap AND skills coverage is tiny → mismatch
-  return overlapRatio < 0.005 && hCoverage < 0.22;
+/** ─────────── Education/score helpers exported for route ─────────── */
+export function mapEduLevel(s: string): string {
+  const x = (s || "").toLowerCase();
+  if (/ph\.?d|doctor/i.test(x)) return "PhD";
+  if (/master|msc|ms\b/i.test(x)) return "Master";
+  if (/bachelor|bs\b|bsc\b/i.test(x)) return "Bachelor";
+  if (/intermediate|high school|hs/i.test(x)) return "Intermediate/High School";
+  return s || "";
 }
-
-
+export function eduFit(required?: string, have?: string): number {
+  const r = (required || "").toLowerCase();
+  const h = (have || "").toLowerCase();
+  if (!r) return 0.7;
+  if (r.includes("phd")) return h.includes("phd") ? 1 : 0.6;
+  if (r.includes("master")) return h.match(/phd|master/) ? 1 : h.includes("bachelor") ? 0.7 : 0.4;
+  if (r.includes("bachelor")) return h.match(/phd|master|bachelor/) ? 1 : 0.5;
+  return h ? 0.7 : 0.3;
+}
+export function clamp01(n: number) { return Math.max(0, Math.min(1, n)); }
