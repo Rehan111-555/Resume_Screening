@@ -1,4 +1,3 @@
-// app/resume-upload/page.tsx
 "use client";
 
 import { useState } from "react";
@@ -7,46 +6,6 @@ import UploadBox from "@/components/UploadBox";
 import ProgressBar from "@/components/ProgressBar";
 import { useApp } from "@/contexts/AppContext";
 import type { UploadedFile, AnalysisResult } from "@/types";
-
-/**
- * Convert our UploadedFile shape to a real File to send in FormData.
- * Works if:
- *  - you stored the native File on `file`
- *  - OR you stored raw bytes on `content` (Blob or ArrayBuffer)
- */
-function toFile(u: UploadedFile): File {
-  // Prefer native file if it exists (type-safe check without relying on TS field)
-  const native: File | undefined =
-    (("file" in u && (u as any).file) as File | undefined) || undefined;
-
-  if (native instanceof File) {
-    // Ensure name/type match (if metadata provided on UploadedFile)
-    const name = u.name || native.name || "upload";
-    const type = u.type || native.type || "application/octet-stream";
-    if (native.name === name && (native.type || "application/octet-stream") === type) {
-      return native;
-    }
-    return new File([native], name, { type });
-  }
-
-  // If we have content as a Blob
-  if (u.content instanceof Blob) {
-    const type = u.type || u.content.type || "application/octet-stream";
-    return new File([u.content], u.name || "upload", { type });
-  }
-
-  // If we have content as an ArrayBuffer (or any typed array-like)
-  if (u.content && typeof (u.content as any).byteLength === "number") {
-    const blob = new Blob([u.content as ArrayBuffer], {
-      type: u.type || "application/octet-stream",
-    });
-    return new File([blob], u.name || "upload");
-  }
-
-  // Fallback (shouldn’t happen)
-  const fallback = new Blob([], { type: u.type || "application/octet-stream" });
-  return new File([fallback], u.name || "upload");
-}
 
 export default function ResumeUploadPage() {
   const router = useRouter();
@@ -78,27 +37,16 @@ export default function ResumeUploadPage() {
 
       const formData = new FormData();
       formData.append("jobRequirements", JSON.stringify(jobRequirements));
-
       for (const f of uploadedFiles) {
-        const file = toFile(f);
-        // Important: supply the filename explicitly for FormData
-        formData.append("resumes", file, file.name);
+        formData.append("resumes", new File([f.content], f.name, { type: f.type }));
       }
 
-      const res = await fetch("/api/analyze-resumes", {
-        method: "POST",
-        body: formData,
-      });
-
+      const res = await fetch("/api/analyze-resumes", { method: "POST", body: formData });
       const raw = await res.text();
       if (!res.ok) throw new Error(raw.slice(0, 500));
 
       let data: AnalysisResult;
-      try {
-        data = JSON.parse(raw);
-      } catch {
-        throw new Error(`Expected JSON but got: ${raw.slice(0, 200)}`);
-      }
+      try { data = JSON.parse(raw); } catch { throw new Error(`Expected JSON but got: ${raw.slice(0, 200)}`); }
 
       dispatch({ type: "SET_ANALYSIS_RESULT", payload: data });
       setSuccess(`Analyzed ${data.candidates.length} candidates 🎉`);
@@ -112,18 +60,12 @@ export default function ResumeUploadPage() {
 
   return (
     <main className="max-w-4xl mx-auto px-4 py-8">
-      <ProgressBar
-        currentStep={1}
-        totalSteps={3}
-        labels={["Job Requirements", "Upload Resumes", "Results"]}
-      />
+      <ProgressBar currentStep={1} totalSteps={3} labels={["Job Requirements", "Upload Resumes", "Results"]} />
 
       <h1 className="text-3xl font-extrabold mb-2 bg-gradient-to-r from-cyan-500 via-blue-500 to-indigo-600 bg-clip-text text-transparent">
         Upload Resumes
       </h1>
-      <p className="text-gray-600 mb-6">
-        Upload PDF or DOCX (up to 100 files). We’ll strictly analyze them against your JD.
-      </p>
+      <p className="text-gray-600 mb-6">Upload PDF or DOCX (up to 100 files). We’ll strictly analyze them against your JD.</p>
 
       <UploadBox uploadedFiles={uploadedFiles} onFilesUpload={setFiles} />
 
@@ -136,7 +78,7 @@ export default function ResumeUploadPage() {
           {loading ? "Analyzing…" : "Analyze with AI"}
         </button>
 
-      <button
+        <button
           onClick={() => router.push("/job-requirements")}
           className="px-5 py-2.5 rounded-xl border border-gray-300 text-gray-700 hover:bg-gray-50"
         >
