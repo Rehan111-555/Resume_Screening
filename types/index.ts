@@ -1,9 +1,8 @@
-// types/index.ts
 export interface JobRequirements {
   title: string;
   description: string;
-  minYearsExperience: number;
-  educationLevel: string;
+  minYearsExperience?: number;
+  educationLevel?: string;
 }
 
 export interface Candidate {
@@ -18,16 +17,18 @@ export interface Candidate {
   skills: string[];
   summary: string;
   matchScore: number;
+  skillsEvidencePct: number;   // NEW: deterministic skills/evidence percentage
   strengths: string[];
   weaknesses: string[];
   gaps: string[];
   mentoringNeeds: string[];
-  questions: string[]; // <-- per-candidate questions
+  questions: string[];         // NEW: per-candidate tailored questions
 }
 
 export interface AnalysisResult {
   candidates: Candidate[];
   errors?: { file: string; message: string }[];
+  meta?: any;
 }
 
 export interface UploadedFile {
