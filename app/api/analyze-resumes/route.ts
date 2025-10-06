@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
-import { convert as htmlToText } from "html-to-text";
+import { convert } from "html-to-text";
 import {
   llmExtractProfile,
   llmDeriveKeywords,
@@ -12,16 +12,30 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+/* ───────────────── Concurrency limiter ───────────────── */
 function createLimiter(maxConcurrent: number) {
   let active = 0;
   const queue: Array<() => void> = [];
-  const next = () => { active--; const run = queue.shift(); if (run) { active++; run(); } };
+  const next = () => {
+    active--;
+    const run = queue.shift();
+    if (run) {
+      active++;
+      run();
+    }
+  };
   return async function <T>(task: () => Promise<T>): Promise<T> {
     if (active >= maxConcurrent) await new Promise<void>((res) => queue.push(res));
-    active++; try { return await task(); } finally { next(); }
+    active++;
+    try {
+      return await task();
+    } finally {
+      next();
+    }
   };
 }
 
+/* ───────────────── Helpers ───────────────── */
 function mapEduLevel(s: string): string {
   const x = (s || "").toLowerCase();
   if (/ph\.?d|doctor/i.test(x)) return "PhD";
@@ -39,26 +53,16 @@ function eduFit(required?: string, have?: string): number {
   if (r.includes("bachelor")) return h.match(/phd|master|bachelor/) ? 1 : 0.5;
   return h ? 0.7 : 0.3;
 }
-const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
-
-/** ---------- Content extraction for multiple formats ---------- */
-async function ocrImage(buffer: Buffer): Promise<string> {
-  // Optional OCR for images; if this fails, we return an empty string and the caller will handle it.
-  try {
-    const { createWorker } = await import("tesseract.js");
-    // tesseract.js uses CDN for traineddata by default; that works on Vercel.
-    const worker = await createWorker({});
-    await worker.loadLanguage("eng");
-    await worker.initialize("eng");
-    const { data } = await worker.recognize(buffer);
-    await worker.terminate();
-    return data?.text || "";
-  } catch {
-    return "";
-  }
+function clamp01(n: number) {
+  return Math.max(0, Math.min(1, n));
 }
 
-async function extractTextFromFile(file: File): Promise<{ text: string; kind: string }> {
+/**
+ * Robust text extraction for PDFs, DOC/DOCX, HTML, and common image formats (OCR).
+ * Uses tesseract.js top-level `recognize()` (no worker) to avoid TS overload issues and
+ * reduce moving parts for Vercel.
+ */
+async function extractTextFromFile(file: File): Promise<string> {
   const name = (file.name || "").toLowerCase();
   const buf = Buffer.from(await file.arrayBuffer());
 
@@ -66,33 +70,35 @@ async function extractTextFromFile(file: File): Promise<{ text: string; kind: st
   if (name.endsWith(".pdf")) {
     const pdf = (await import("pdf-parse")).default;
     const res = await pdf(buf);
-    return { text: (res.text || "").trim(), kind: "pdf" };
+    return res.text || "";
   }
 
-  // DOCX
-  if (name.endsWith(".docx")) {
+  // DOCX/DOC
+  if (name.endsWith(".docx") || name.endsWith(".doc")) {
     const mammoth = await import("mammoth");
     const { value } = await mammoth.extractRawText({ buffer: buf });
-    return { text: (value || "").trim(), kind: "docx" };
+    return value || "";
   }
 
-  // Plain HTML -> text
+  // HTML (sometimes resumes are exported as HTML)
   if (name.endsWith(".html") || name.endsWith(".htm")) {
-    const text = htmlToText(buf.toString("utf8"), { wordwrap: false });
-    return { text: text.trim(), kind: "html" };
+    const html = buf.toString("utf8");
+    return convert(html, { wordwrap: false }) || "";
   }
 
-  // Images (PNG/JPG/JPEG)
-  if (/\.(png|jpg|jpeg|gif|webp)$/i.test(name)) {
-    const text = await ocrImage(buf);
-    return { text: text.trim(), kind: "image" };
+  // Image OCR (png, jpg, jpeg, gif, bmp, webp, tiff)
+  if (/\.(png|jpe?g|gif|bmp|webp|tiff?)$/i.test(name)) {
+    // Use top-level recognize to avoid worker typings and lifecycle.
+    const tesseract = await import("tesseract.js");
+    const result = await (tesseract as any).recognize(buf, "eng");
+    return (result?.data?.text || "").toString();
   }
 
-  // Fallback: treat as UTF-8 text
-  return { text: buf.toString("utf8").trim(), kind: "text" };
+  // Plain text fallback
+  return buf.toString("utf8");
 }
 
-/** ---------- Shared types with UI ---------- */
+/* ───────────────── Types shared with UI ───────────────── */
 type JobRequirements = {
   title: string;
   description: string;
@@ -124,27 +130,33 @@ type AnalysisResult = {
   meta?: { keywords: JDKeywords };
 };
 
-/** ---------- Route ---------- */
+/* ───────────────── Route ───────────────── */
 export async function POST(req: NextRequest) {
   try {
     const form = await req.formData();
 
     const jrRaw = form.get("jobRequirements");
     if (!jrRaw || typeof jrRaw !== "string") {
-      return NextResponse.json({ error: "Missing jobRequirements (stringified JSON)." }, { status: 400 });
+      return NextResponse.json(
+        { error: "Missing jobRequirements (stringified JSON)." },
+        { status: 400 }
+      );
     }
     const job: JobRequirements = JSON.parse(jrRaw);
     const JD = `${job.title || ""}\n\n${job.description || ""}`;
 
     const resumeFiles = form.getAll("resumes") as File[];
     if (!resumeFiles.length) {
-      return NextResponse.json({ error: "No resumes uploaded (field name must be 'resumes')." }, { status: 400 });
+      return NextResponse.json(
+        { error: "No resumes uploaded (field name must be 'resumes')." },
+        { status: 400 }
+      );
     }
     if (resumeFiles.length > 100) {
       return NextResponse.json({ error: "Limit 100 resumes per batch." }, { status: 400 });
     }
 
-    // Role-agnostic JD keywords
+    // JD keywords (role-agnostic)
     const keywords = await llmDeriveKeywords(JD);
 
     const limit = createLimiter(8);
@@ -155,31 +167,23 @@ export async function POST(req: NextRequest) {
       resumeFiles.map((f) =>
         limit(async () => {
           try {
-            const { text, kind } = await extractTextFromFile(f);
-            if (!text) {
-              throw new Error(
-                kind === "image"
-                  ? "OCR failed for image resume."
-                  : "Could not read resume text."
-              );
-            }
+            const text = await extractTextFromFile(f);
 
-            // Stable hash so duplicates always map to the same ID
-            const stableId = crypto.createHash("sha256").update(text).digest("hex");
-
-            // LLM passes run at temperature 0 (deterministic)
             const [profile, llmRubric] = await Promise.all([
               llmExtractProfile(text),
               llmGradeCandidate(JD, text),
             ]);
 
-            // Heuristic evidence against JD keywords (strict)
+            // Heuristic evidence coverage
             const h = scoreHeuristically(text, keywords);
             const skillsEvidencePct = Math.round(h.coverage * 100);
 
-            // Experience (deterministic rounding)
+            // Years experience (blend profile + LLM estimate)
             const years = Number(
               (profile?.yearsExperience || llmRubric?.yearsExperienceEstimate || 0).toFixed(2)
+            );
+            const expFit = clamp01(
+              job.minYearsExperience ? years / job.minYearsExperience : 1
             );
 
             // Education
@@ -188,52 +192,43 @@ export async function POST(req: NextRequest) {
                 ? [profile.education[0]?.degree, profile.education[0]?.field, profile.education[0]?.institution]
                     .filter(Boolean)
                     .join(", ")
-                : (llmRubric?.educationSummary || "");
+                : llmRubric?.educationSummary || "";
             const eduLabel = mapEduLevel(eduStr);
             const eduScore = eduFit(job.educationLevel, eduLabel);
 
-            // Domain-mismatch: if NONE of the "must" keywords hit, force 0 score and mark
-            const domainMatched = h.matched.length > 0 || (keywords.must || []).some(k =>
-              (k.synonyms || [k.name]).some(s => text.toLowerCase().includes(s.toLowerCase()))
-            );
+            // Blended overall score (deterministic)
+            const llmNorm = (llmRubric?.score || 0) / 100;
+            const overall = 0.55 * h.coverage + 0.25 * expFit + 0.1 * eduScore + 0.1 * llmNorm;
+            const matchScore = Math.round(100 * clamp01(overall));
 
-            let matchScore = 0;
-            if (domainMatched) {
-              const llmNorm = (llmRubric?.score || 0) / 100;
-              const expFit = clamp01(
-                job.minYearsExperience ? years / job.minYearsExperience : 1
-              );
-              const overall = 0.65 * h.coverage + 0.15 * expFit + 0.1 * eduScore + 0.1 * llmNorm;
-              matchScore = Math.round(100 * clamp01(overall));
-            } else {
-              // override to 0
-              matchScore = 0;
-            }
-
-            // Skills merged & deduped
+            // Skills merged (deduped deterministically)
             const mergedSkills = Array.from(
-              new Set<string>([
-                ...(Array.isArray(profile?.skills) ? profile.skills : []).map(String),
-                ...(Array.isArray(llmRubric?.matchedSkills) ? llmRubric.matchedSkills : []).map(String),
-                ...h.matched,
-              ].filter(Boolean))
+              new Set<string>(
+                [
+                  ...(Array.isArray(profile?.skills) ? profile.skills : []).map(String),
+                  ...(Array.isArray(llmRubric?.matchedSkills) ? llmRubric.matchedSkills : []).map(String),
+                  ...h.matched,
+                ].filter(Boolean)
+              )
             );
 
+            // Narrative
             const strengths = [
               ...(Array.isArray(llmRubric?.strengths) ? llmRubric.strengths : []),
               ...(h.matched.length ? [`Strong evidence for: ${h.matched.slice(0, 10).join(", ")}`] : []),
             ];
-
             const missing = h.missing;
             const weaknesses = [
               ...(Array.isArray(llmRubric?.weaknesses) ? llmRubric.weaknesses : []),
               ...(missing.length ? [`Missing vs JD: ${missing.slice(0, 8).join(", ")}`] : []),
-              ...(domainMatched ? [] : ["Domain not matching the JD"]),
             ];
 
+            // Domain mismatch (optional): if *no* must-have keyword is matched at all, force 0
+            const domainMismatch = h.matched.length === 0;
+
             candidates.push({
-              id: stableId, // stable for duplicates
-              name: profile?.name || f.name.replace(/\.(pdf|docx|doc|txt|html?|png|jpg|jpeg|gif|webp)$/i, ""),
+              id: crypto.randomUUID(),
+              name: profile?.name || f.name.replace(/\.(pdf|docx|doc|txt|png|jpe?g|gif|bmp|webp|tiff?)$/i, ""),
               email: profile?.email || "",
               phone: profile?.phone || "",
               location: profile?.location || "",
@@ -241,17 +236,15 @@ export async function POST(req: NextRequest) {
               yearsExperience: years,
               education: eduLabel || eduStr || "",
               skills: mergedSkills,
-              summary: profile?.summary || text.slice(0, 500).replace(/\s+/g, " "),
-              matchScore,
-              skillsEvidencePct,
-              strengths,
-              weaknesses,
-              gaps: domainMatched
-                ? missing.map((m: string) => `Skill gap: ${m}`)
-                : ["Domain not matching the JD"],
-              mentoringNeeds: domainMatched
-                ? missing.slice(0, 3).map((m: string) => `Mentorship in ${m}`)
-                : ["Domain alignment"],
+              summary:
+                profile?.summary ||
+                text.slice(0, 500).replace(/\s+/g, " "),
+              matchScore: domainMismatch ? 0 : matchScore,
+              skillsEvidencePct: domainMismatch ? 0 : skillsEvidencePct,
+              strengths: domainMismatch ? [] : strengths,
+              weaknesses: domainMismatch ? ["Domain not matching the JD"] : weaknesses,
+              gaps: domainMismatch ? ["Domain gap: candidate background doesn’t match JD domain"] : missing.map((m) => `Skill gap: ${m}`),
+              mentoringNeeds: domainMismatch ? [] : missing.slice(0, 3).map((m) => `Mentorship in ${m}`),
               questions: Array.isArray(llmRubric?.questions) ? llmRubric.questions : [],
             });
           } catch (e: any) {
@@ -261,9 +254,15 @@ export async function POST(req: NextRequest) {
       )
     );
 
+    // Sort by match score descending
     candidates.sort((a, b) => (b.matchScore || 0) - (a.matchScore || 0));
 
-    const result: AnalysisResult = { candidates, errors, meta: { keywords } };
+    const result: AnalysisResult = {
+      candidates,
+      errors,
+      meta: { keywords },
+    };
+
     return NextResponse.json(result);
   } catch (err: any) {
     return NextResponse.json(
