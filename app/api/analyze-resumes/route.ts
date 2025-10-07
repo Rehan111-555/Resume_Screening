@@ -60,6 +60,7 @@ function baseCandidate(id: string): Candidate {
     title: "",
     yearsExperience: 0,
     education: "",
+    educationSummary: "",      // <- added
     skills: [],
     summary: "",
     matchScore: 0,
@@ -70,6 +71,7 @@ function baseCandidate(id: string): Candidate {
     weaknesses: [],
     gaps: [],
     mentoringNeeds: [],
+    questions: [],             // <- added
   };
 }
 
@@ -133,6 +135,11 @@ export async function POST(req: NextRequest) {
       const eduIn = Array.isArray(profile.education) ? profile.education : [];
       const bestEdu = eduIn.find((e: any) => e?.degree) || eduIn[0] || { degree: "" };
       c.education = mapEduLevel(bestEdu?.degree || "") || "";
+      c.educationSummary =
+        (eduIn || [])
+          .map((e: any) => [e?.degree, e?.field, e?.institution].filter(Boolean).join(", "))
+          .filter(Boolean)
+          .join(" | ") || "";
 
       const y = Number(profile.yearsExperience) || estimateYears(resumeText) || 0;
       c.yearsExperience = Math.max(0, Math.min(40, Math.round(y)));
@@ -159,6 +166,9 @@ export async function POST(req: NextRequest) {
       c.gaps = (heuristic.missing || []).slice(0, 6);
       c.strengths = (heuristic.matched || []).slice(0, 6);
       c.weaknesses = [];
+
+      // leave questions empty here unless you’re populating from llmGradeCandidate elsewhere
+      c.questions = c.questions || [];
 
       c.formatted = [
         `## Candidate Details — **${c.name || "—"}**`,
