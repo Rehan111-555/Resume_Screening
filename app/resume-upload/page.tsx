@@ -6,12 +6,47 @@ import { useRouter } from "next/navigation";
 import { useApp } from "@/contexts/AppContext";
 import type { UploadedFile, AnalysisResult } from "@/types";
 
-function toBlobPart(input: ArrayBuffer | Uint8Array | string): BlobPart {
+/**
+ * Convert any of our supported buffer types into a BlobPart.
+ * We intentionally cast to keep TypeScript happy across environments
+ * where lib.dom types differ (ArrayBuffer vs SharedArrayBuffer).
+ */
+function toBlobPart(input: UploadedFile["content"]): BlobPart {
   if (typeof input === "string") return input;
-  if (input instanceof ArrayBuffer) return new Uint8Array(input);
-  if (input instanceof Uint8Array) return input;
-  // Fallback: stringify unknown
-  return String(input);
+
+  // Uint8Array is an ArrayBufferView (valid BufferSource)
+  if (typeof Uint8Array !== "undefined") {
+    try {
+      if (input instanceof Uint8Array) return (input as unknown) as BlobPart;
+    } catch {
+      /* no-op */
+    }
+  }
+
+  // ArrayBuffer (valid BufferSource)
+  if (typeof ArrayBuffer !== "undefined") {
+    try {
+      if (input instanceof ArrayBuffer) return (input as unknown) as BlobPart;
+    } catch {
+      /* no-op */
+    }
+  }
+
+  // SharedArrayBuffer (also acceptable at runtime, TS may complain; cast it)
+  if (
+    typeof SharedArrayBuffer !== "undefined" &&
+    input instanceof SharedArrayBuffer
+  ) {
+    return (input as unknown) as BlobPart;
+  }
+
+  // Fallback: if it's any typed buffer-like object, pass as-is
+  if (input && typeof input === "object" && "byteLength" in (input as any)) {
+    return (input as unknown) as BlobPart;
+  }
+
+  // Final fallback: stringify to bytes
+  return new TextEncoder().encode(String(input));
 }
 
 export default function ResumeUploadPage() {
@@ -26,7 +61,9 @@ export default function ResumeUploadPage() {
     dispatch({ type: "SET_UPLOADED_FILES", payload: files });
     try {
       sessionStorage.setItem("uploadedFiles", JSON.stringify(files));
-    } catch {}
+    } catch {
+      /* ignore */
+    }
   };
 
   async function handleAnalyze() {
@@ -47,9 +84,13 @@ export default function ResumeUploadPage() {
 
       const formData = new FormData();
       formData.append("jobRequirements", JSON.stringify(jobRequirements));
+
       for (const f of uploadedFiles) {
         const part = toBlobPart(f.content);
-        const file = new File([part], f.name, { type: f.type || "application/octet-stream" });
+        // Cast the part to any to fully suppress overly strict lib checks
+        const file = new File([part as any], f.name, {
+          type: f.type || "application/octet-stream",
+        });
         formData.append("resumes", file);
       }
 
@@ -71,7 +112,9 @@ export default function ResumeUploadPage() {
       dispatch({ type: "SET_ANALYSIS_RESULT", payload: data });
       try {
         sessionStorage.setItem("analysisResult", JSON.stringify(data));
-      } catch {}
+      } catch {
+        /* ignore */
+      }
 
       setSuccess(`Analyzed ${data.candidates.length} candidates 🎉`);
       router.push("/results");
@@ -99,8 +142,7 @@ export default function ResumeUploadPage() {
         Upload PDF or DOCX (up to 100 files). We’ll analyze them against your JD.
       </p>
 
-      {/* Replace this with your real UploadBox component.
-          For now we show a simple list to confirm state binding. */}
+      {/* Replace with your real uploader; this only shows what is already in state */}
       <div className="rounded-xl border p-4 mb-4">
         {uploadedFiles.length === 0 ? (
           <p className="text-gray-600">No files added by your uploader.</p>
