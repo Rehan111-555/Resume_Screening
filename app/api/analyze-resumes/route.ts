@@ -1,87 +1,19 @@
-// app/api/analyze-resumes/route.ts
 import { NextResponse } from "next/server";
-import {
-  cleanTokens,
-  domainSimilarity,
-  estimateYears,
-  llmDeriveKeywords,
-  llmExtractProfile,
-  llmGradeCandidate,
-  scoreHeuristically,
-  type JDKeywords,
-} from "@/utils/geminiClient.server";
 import type { AnalysisResult, Candidate, JobRequirements } from "@/types";
 
-/** -----------------------------------------------------------
- *  Lightweight HTML → text (no html-to-text dependency)
- * ----------------------------------------------------------*/
-function htmlToText(html: string): string {
-  const withoutScripts = html.replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, "");
-  const withoutStyles = withoutScripts.replace(/<style[\s\S]*?>[\s\S]*?<\/style>/gi, "");
-  const withNewlines = withoutStyles.replace(/<\/(p|div|section|li|br|h[1-6])>/gi, "\n");
-  const stripped = withNewlines.replace(/<[^>]+>/g, " ");
-  return stripped.replace(/\s+/g, " ").trim();
-}
+import {
+  estimateYears,
+  domainSimilarity,
+  llmDeriveKeywords,
+  scoreHeuristically,
+  llmExtractProfile,
+  llmGradeCandidate,
+  mapEduLevel,
+  clamp01,
+} from "@/utils/geminiClient.server";
 
-/** -----------------------------------------------------------
- *  File → Plain text (PDF, DOCX, TXT, HTML)
- *  (dynamic imports keep Next.js build happy)
- * ----------------------------------------------------------*/
-async function fileToText(file: File): Promise<string> {
-  const name = (file.name || "").toLowerCase();
-  const type = (file.type || "").toLowerCase();
-  const buf = await file.arrayBuffer();
+export const runtime = "nodejs";
 
-  // PDF
-  if (type.includes("pdf") || name.endsWith(".pdf")) {
-    try {
-      const pdfParse = (await import("pdf-parse")).default as any;
-      const data = await pdfParse(Buffer.from(buf));
-      const text = String(data?.text || "");
-      if (text.trim()) return text;
-    } catch (e) {
-      // fall through
-    }
-  }
-
-  // DOCX
-  if (name.endsWith(".docx") || type.includes("officedocument.wordprocessingml.document")) {
-    try {
-      const mammoth = await import("mammoth");
-      const { value } = await mammoth.extractRawText({ arrayBuffer: buf });
-      if (value?.trim()) return value;
-    } catch (e) {
-      // fall through
-    }
-  }
-
-  // HTML
-  if (type.includes("html") || name.endsWith(".html") || name.endsWith(".htm")) {
-    const txt = new TextDecoder().decode(new Uint8Array(buf));
-    return htmlToText(txt);
-  }
-
-  // Plain/Text fallback (txt, rtf, md)
-  if (
-    type.startsWith("text/") ||
-    name.endsWith(".txt") ||
-    name.endsWith(".md") ||
-    name.endsWith(".rtf")
-  ) {
-    return new TextDecoder().decode(new Uint8Array(buf));
-  }
-
-  // Absolute last resort: try to decode as UTF-8
-  try {
-    return new TextDecoder().decode(new Uint8Array(buf));
-  } catch {
-    return "";
-  }
-}
-
-/** -----------------------------------------------------------
- *  Candidate base object – include every field your type expects
- * ----------------------------------------------------------*/
 function baseCandidate(id: string): Candidate {
   return {
     id,
@@ -94,82 +26,78 @@ function baseCandidate(id: string): Candidate {
     education: "",
     skills: [],
     summary: "",
+
     matchScore: 0,
     skillsEvidencePct: 0,
+    yearsScore: 0,
+    eduScore: 0,
     domainMismatch: false,
-    // computed in this route:
+
     strengths: [],
     weaknesses: [],
     gaps: [],
     mentoringNeeds: [],
+
     matchedSkills: [],
     missingSkills: [],
-    educationSummary: "",
     questions: [],
-    yearsScore: 0,
-    eduScore: 0,
+    educationSummary: "",
     formatted: "",
-  } as unknown as Candidate;
+  };
 }
 
-/** -----------------------------------------------------------
- *  POST /api/analyze-resumes
- * ----------------------------------------------------------*/
+// Safely flatten JD to plain text (tolerant fields)
+function jdToText(jd: Partial<JobRequirements> | null | undefined): string {
+  if (!jd) return "";
+  const roleLike =
+    (jd as any).role ?? (jd as any).title ?? (jd as any).position ?? "";
+
+  return [
+    roleLike,
+    (jd as any).description ?? "",
+    Array.isArray((jd as any).requiredSkills)
+      ? (jd as any).requiredSkills.join(" ")
+      : "",
+    Array.isArray((jd as any).niceToHave)
+      ? (jd as any).niceToHave.join(" ")
+      : "",
+    (jd as any).education ?? "",
+    (jd as any).domain ?? "",
+  ].join("\n");
+}
+
 export async function POST(req: Request) {
   try {
     const form = await req.formData();
 
-    const jd = JSON.parse(String(form.get("jobRequirements") || "{}")) as JobRequirements;
-    const resumes = form.getAll("resumes").filter(Boolean) as File[];
+    const jdRaw = form.get("jobRequirements") as string | null;
+    const jd: JobRequirements | null = jdRaw ? JSON.parse(jdRaw) : null;
+    const jdText = jdToText(jd);
 
-    // make sure we can run without crashing if nothing arrives
-    if (!resumes.length) {
-      const payload: AnalysisResult = { candidates: [] };
-      return NextResponse.json(payload, { status: 200 });
-    }
+    // derive keywords once per request
+    const kw = await llmDeriveKeywords(jdText);
 
-    const jdText = [
-      jd.role || "",
-      jd.description || "",
-      (jd.requiredSkills || []).join(" "),
-      (jd.niceToHave || []).join(" "),
-      jd.education || "",
-      jd.domain || "",
-    ].join("\n");
-
-    // derive JD keywords and prepare for heuristic
-    const kw: JDKeywords = await llmDeriveKeywords(jdText);
-
-    // process each resume
+    const files = form.getAll("resumes") as File[];
     const outCandidates: Candidate[] = [];
-    for (let i = 0; i < resumes.length; i++) {
-      const file = resumes[i];
-      const id = `${i + 1}-${file.name}`;
+
+    for (const f of files) {
+      const id = `${f.name}-${f.size}-${f.type}`;
       const cand = baseCandidate(id);
 
-      // 1) Extract text
-      const rawText = await fileToText(file);
-      const text = rawText?.trim() || "";
+      // Read as text (works for txt/docx exports and sometimes PDFs; if garbage, LLM still tries)
+      let text = "";
+      try {
+        text = await f.text();
+      } catch {
+        text = "";
+      }
 
-      // 2) Estimate years & domain similarity
-      const yearsEst = estimateYears(text);
-      cand.yearsExperience = isFinite(yearsEst) ? yearsEst : 0;
-
-      const domainSim = domainSimilarity(jdText, text); // 0..1
-      cand.domainMismatch = domainSim < 0.12; // tuned threshold
-
-      // 3) Heuristic skills coverage vs JD
-      const h = scoreHeuristically(text, kw);
-      cand.skillsEvidencePct = Math.round(h.coverage * 100);
-      cand.matchedSkills = cleanTokens(h.matched);
-      cand.missingSkills = cleanTokens(h.missing);
-
-      // 4) LLM profile & grading (guard against empty text)
+      // LLM profile extraction
       let profile: any = {};
-      let grade: any = {};
-      if (text.length > 50) {
+      try {
         profile = await llmExtractProfile(text);
-        grade = await llmGradeCandidate(jdText, text);
+      } catch {
+        profile = {};
       }
 
       cand.name = profile.name || "";
@@ -178,48 +106,100 @@ export async function POST(req: Request) {
       cand.location = profile.location || "";
       cand.title = profile.headline || "";
       cand.summary = profile.summary || "";
-      cand.education = (profile.education?.[0]?.degree || "") || "";
-      cand.skills = cleanTokens([...(profile.skills || []), ...(profile.tools || [])]);
-      cand.strengths = cleanTokens(grade.strengths || []);
-      cand.weaknesses = cleanTokens(grade.weaknesses || []);
-      cand.questions = grade.questions || [];
-      cand.educationSummary = String(grade.educationSummary || "");
+      cand.skills = Array.isArray(profile.skills) ? profile.skills : [];
+      cand.education =
+        (profile.education?.[0]?.degree
+          ? mapEduLevel(profile.education[0].degree)
+          : "") || "";
 
-      // score blend
-      const domainScore = Math.max(0, Math.min(1, domainSim)) * 100;
-      const yearsScore = Math.min(100, Math.round((cand.yearsExperience / Math.max(1, jd.minYears || 8)) * 100));
-      cand.yearsScore = yearsScore;
-      cand.eduScore = 0; // leave 0 unless you map against jd.education w/ mapEduLevel/eduFit
+      // Experience estimation (blend explicit + heuristic)
+      const yearsFromText = estimateYears(text);
+      const yearsLLM = Number(profile.yearsExperience || 0);
+      const yrs =
+        yearsLLM && yearsFromText
+          ? Math.round((yearsLLM + yearsFromText) / 2)
+          : yearsLLM || yearsFromText || 0;
+      cand.yearsExperience = Math.max(0, Math.min(40, yrs));
 
-      const heuristicScore = Math.round(h.coverage * 100);
-      const blended = Math.round(0.55 * heuristicScore + 0.25 * domainScore + 0.20 * yearsScore);
-      cand.matchScore = Math.max(0, Math.min(100, blended));
+      // Heuristic must/nice matching
+      const h = scoreHeuristically(text, kw);
+      cand.skillsEvidencePct = Math.round(h.coverage * 100);
 
-      // formatted (for the Copy button)
-      cand.formatted =
-        `Name: ${cand.name || "-"}\n` +
-        `Title: ${cand.title || "-"}\n` +
-        `Email: ${cand.email || "-"} | Phone: ${cand.phone || "-"} | Location: ${cand.location || "-"}\n` +
-        `Years: ${cand.yearsExperience} | Match: ${cand.matchScore}% | Skills&Evidence: ${cand.skillsEvidencePct}%\n\n` +
-        `Summary:\n${cand.summary || "-"}\n\n` +
-        `Skills:\n${cand.skills?.join(", ") || "-"}\n\n` +
-        `Matched JD:\n${cand.matchedSkills.join(", ") || "-"}\n` +
-        `Missing JD:\n${cand.missingSkills.join(", ") || "-"}`;
+      // Domain similarity
+      const sim = domainSimilarity(jdText, text);
+      cand.domainMismatch = sim < 0.15; // low similarity => mismatch
 
-      // suggested mentoring/gaps from missing
-      cand.gaps = cand.missingSkills.slice(0, 6).map((s) => `Skill gap: ${s}`);
-      cand.mentoringNeeds = cand.missingSkills.slice(0, 3).map((s) => `Mentorship in ${s}`);
+      // Education score (rough)
+      const eduReq = (jd?.education || "").toLowerCase();
+      const eduHave = cand.education.toLowerCase();
+      let eduScore = 0.7;
+      if (eduReq) {
+        if (eduReq.includes("phd")) eduScore = eduHave.includes("phd") ? 1 : 0.6;
+        else if (eduReq.includes("master"))
+          eduScore = /phd|master/.test(eduHave)
+            ? 1
+            : eduHave.includes("bachelor")
+            ? 0.7
+            : 0.4;
+        else if (eduReq.includes("bachelor"))
+          eduScore = /phd|master|bachelor/.test(eduHave) ? 1 : 0.5;
+      }
+      cand.eduScore = eduScore;
+
+      // Years score (rough)
+      const wantYearsMatch =
+        /\b(\d+)\s*\+?\s*years?\b/i.exec(jdText || "")?.[1] ?? null;
+      const wantYears = wantYearsMatch ? parseInt(wantYearsMatch, 10) : 0;
+      const yrScore = wantYears
+        ? clamp01(cand.yearsExperience / wantYears)
+        : clamp01(cand.yearsExperience / 5);
+      cand.yearsScore = yrScore;
+
+      // Lightweight score blend
+      const baseScore =
+        0.55 * h.coverage + 0.2 * yrScore + 0.15 * eduScore + 0.1 * sim;
+      cand.matchScore = Math.round(baseScore * 100);
+
+      // LLM grade (adds strengths/weaknesses/questions)
+      try {
+        const grade = await llmGradeCandidate(jdText, text);
+        cand.strengths = grade.strengths || [];
+        cand.weaknesses = grade.weaknesses || [];
+        cand.questions = grade.questions || [];
+        cand.matchedSkills = grade.matchedSkills || [];
+        cand.missingSkills = grade.missingSkills || [];
+        cand.educationSummary = grade.educationSummary || "";
+      } catch {
+        /* ignore */
+      }
+
+      // Nice formatted snippet for copy (compact)
+      cand.formatted = [
+        cand.name && `Name: ${cand.name}`,
+        cand.email && `Email: ${cand.email}`,
+        cand.phone && `Phone: ${cand.phone}`,
+        cand.location && `Location: ${cand.location}`,
+        cand.title && `Headline: ${cand.title}`,
+        `Experience: ${cand.yearsExperience} years`,
+        cand.education && `Education: ${cand.education}`,
+        cand.skills?.length ? `Skills: ${cand.skills.slice(0, 15).join(", ")}` : "",
+        `Match: ${cand.matchScore}%  | Skills & Evidence: ${cand.skillsEvidencePct}%`,
+      ]
+        .filter(Boolean)
+        .join("\n");
 
       outCandidates.push(cand);
     }
 
-    // NOTE: your AnalysisResult does NOT contain 'jd', so we only return candidates
-    const payload: AnalysisResult = { candidates: outCandidates };
+    // Sort by match desc
+    outCandidates.sort((a, b) => b.matchScore - a.matchScore);
+
+    const payload: AnalysisResult = { candidates: outCandidates, jdText };
     return NextResponse.json(payload, { status: 200 });
   } catch (e: any) {
     console.error(e);
     return NextResponse.json(
-      { error: e?.message || "Failed to analyze resumes" },
+      { error: e?.message || "Failed to analyze resumes." },
       { status: 500 }
     );
   }
