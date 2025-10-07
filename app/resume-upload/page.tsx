@@ -3,10 +3,16 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import UploadBox from "@/components/UploadBox";
-import ProgressBar from "@/components/ProgressBar";
 import { useApp } from "@/contexts/AppContext";
 import type { UploadedFile, AnalysisResult } from "@/types";
+
+function toBlobPart(input: ArrayBuffer | Uint8Array | string): BlobPart {
+  if (typeof input === "string") return input;
+  if (input instanceof ArrayBuffer) return new Uint8Array(input);
+  if (input instanceof Uint8Array) return input;
+  // Fallback: stringify unknown
+  return String(input);
+}
 
 export default function ResumeUploadPage() {
   const router = useRouter();
@@ -14,52 +20,44 @@ export default function ResumeUploadPage() {
   const { jobRequirements, uploadedFiles, loading } = state;
 
   const [error, setError] = useState<string | null>(null);
-  const [warnedNoJD, setWarnedNoJD] = useState(false);
+  const [success, setSuccess] = useState<string | null>(null);
 
   const setFiles = (files: UploadedFile[]) => {
     dispatch({ type: "SET_UPLOADED_FILES", payload: files });
+    try {
+      sessionStorage.setItem("uploadedFiles", JSON.stringify(files));
+    } catch {}
   };
 
   async function handleAnalyze() {
     setError(null);
+    setSuccess(null);
 
+    if (!jobRequirements || Object.keys(jobRequirements).length === 0) {
+      setError("Please complete Job Requirements first.");
+      return;
+    }
     if (!uploadedFiles.length) {
       setError("Please upload at least one resume.");
       return;
-    }
-
-    // If the user didn’t fill the Job Requirements step, we still analyze.
-    // Show a one-time warning (non-blocking) to be explicit.
-    const hasJD =
-      jobRequirements &&
-      (jobRequirements.description ||
-        jobRequirements.role ||
-        jobRequirements.position ||
-        jobRequirements.title ||
-        (jobRequirements.requiredSkills && jobRequirements.requiredSkills.length) ||
-        (jobRequirements.niceToHave && jobRequirements.niceToHave.length) ||
-        jobRequirements.educationLevel ||
-        typeof jobRequirements.minYearsExperience === "number");
-
-    if (!hasJD && !warnedNoJD) {
-      setWarnedNoJD(true);
-      setError(
-        "No Job Description/Requirements found. We’ll analyze resumes with generic scoring. (You can still proceed.)"
-      );
-      // fall-through and keep going
     }
 
     try {
       dispatch({ type: "SET_LOADING", payload: true });
 
       const formData = new FormData();
-      formData.append("jobRequirements", JSON.stringify(jobRequirements || {}));
+      formData.append("jobRequirements", JSON.stringify(jobRequirements));
       for (const f of uploadedFiles) {
-        // UploadBox guarantees f.file is a File object
-        formData.append("resumes", f.file);
+        const part = toBlobPart(f.content);
+        const file = new File([part], f.name, { type: f.type || "application/octet-stream" });
+        formData.append("resumes", file);
       }
 
-      const res = await fetch("/api/analyze-resumes", { method: "POST", body: formData });
+      const res = await fetch("/api/analyze-resumes", {
+        method: "POST",
+        body: formData,
+      });
+
       const raw = await res.text();
       if (!res.ok) throw new Error(raw.slice(0, 500));
 
@@ -71,6 +69,11 @@ export default function ResumeUploadPage() {
       }
 
       dispatch({ type: "SET_ANALYSIS_RESULT", payload: data });
+      try {
+        sessionStorage.setItem("analysisResult", JSON.stringify(data));
+      } catch {}
+
+      setSuccess(`Analyzed ${data.candidates.length} candidates 🎉`);
       router.push("/results");
     } catch (e: any) {
       setError(e?.message || "Failed to analyze resumes.");
@@ -81,22 +84,41 @@ export default function ResumeUploadPage() {
 
   return (
     <main className="max-w-4xl mx-auto px-4 py-8">
-      <ProgressBar currentStep={2} totalSteps={3} labels={["Job Requirements", "Upload Resumes", "Results"]} />
+      <div className="mb-6">
+        <nav className="flex gap-8 text-sm text-gray-600">
+          <span>Job Requirements</span>
+          <span className="font-semibold text-gray-900">Upload Resumes</span>
+          <span>Results</span>
+        </nav>
+      </div>
 
       <h1 className="text-3xl font-extrabold mb-2 bg-gradient-to-r from-cyan-500 via-blue-500 to-indigo-600 bg-clip-text text-transparent">
         Upload Resumes
       </h1>
       <p className="text-gray-600 mb-6">
-        Upload PDF or DOCX (up to 100 files). We’ll analyze them against your JD (if provided).
+        Upload PDF or DOCX (up to 100 files). We’ll analyze them against your JD.
       </p>
 
-      <UploadBox uploadedFiles={uploadedFiles} onFilesUpload={setFiles} />
+      {/* Replace this with your real UploadBox component.
+          For now we show a simple list to confirm state binding. */}
+      <div className="rounded-xl border p-4 mb-4">
+        {uploadedFiles.length === 0 ? (
+          <p className="text-gray-600">No files added by your uploader.</p>
+        ) : (
+          <ul className="list-disc ml-6 space-y-1">
+            {uploadedFiles.map((f) => (
+              <li key={f.id}>
+                {f.name} <span className="text-gray-500">({f.type || "unknown"})</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
 
       <div className="mt-6 flex items-center gap-3">
         <button
           onClick={handleAnalyze}
-          // ⬇️ Button only requires files; JD is optional
-          disabled={loading || uploadedFiles.length === 0}
+          disabled={loading || !uploadedFiles.length || !jobRequirements}
           className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-indigo-600 to-pink-600 text-white disabled:opacity-50 shadow hover:opacity-95"
         >
           {loading ? "Analyzing…" : "Analyze with AI"}
@@ -111,6 +133,7 @@ export default function ResumeUploadPage() {
       </div>
 
       {error && <div className="mt-4 text-red-600">{error}</div>}
+      {success && <div className="mt-4 text-green-700">{success}</div>}
     </main>
   );
 }
