@@ -5,13 +5,13 @@ import type { Candidate } from "@/types";
 
 type Props = {
   candidate: Candidate | null;
-  /** Optional modal state — safe to ignore if you don’t use a modal wrapper */
+  /** Optional props if you show this in a modal */
   isOpen?: boolean;
   onClose?: () => void;
 };
 
 export default function CandidateDetail({ candidate, isOpen, onClose }: Props) {
-  // If you want to use these props to actually hide/show the component:
+  // If you use modal controls, respect them
   if (isOpen === false) return null;
   if (!candidate) return null;
 
@@ -31,19 +31,22 @@ export default function CandidateDetail({ candidate, isOpen, onClose }: Props) {
     gaps = [],
     mentoringNeeds = [],
     questions = [],
+    domainMismatch,
   } = candidate;
 
   async function handleCopy() {
     try {
-      const text = candidate.formatted || "";
+      // ✅ Guard inside the function (narrowing doesn't flow from the outer return)
+      const text = candidate?.formatted ?? "";
       if (!text) return;
       await navigator.clipboard.writeText(text);
-    } catch {}
+    } catch {
+      // ignore
+    }
   }
 
   return (
     <div className="relative">
-      {/* (Optional) Close button if you wire it to a modal */}
       {onClose && (
         <button
           onClick={onClose}
@@ -109,7 +112,10 @@ export default function CandidateDetail({ candidate, isOpen, onClose }: Props) {
         {skills.length ? (
           <div className="flex flex-wrap gap-2">
             {skills.map((s, i) => (
-              <span key={`${s}-${i}`} className="rounded-full bg-gray-100 px-2.5 py-1 text-xs text-gray-800">
+              <span
+                key={`${s}-${i}`}
+                className="rounded-full bg-gray-100 px-2.5 py-1 text-xs text-gray-800"
+              >
                 {s}
               </span>
             ))}
@@ -178,7 +184,7 @@ export default function CandidateDetail({ candidate, isOpen, onClose }: Props) {
       </div>
 
       {/* AI Interview Questions (only when domain matches) */}
-      {candidate.domainMismatch ? null : questions.length ? (
+      {!domainMismatch && questions.length > 0 ? (
         <section className="mt-6">
           <h3 className="font-medium text-gray-900 mb-2">AI Interview Questions</h3>
           <ol className="list-decimal pl-5 space-y-1 text-sm text-gray-800">
