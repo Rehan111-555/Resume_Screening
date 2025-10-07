@@ -1,7 +1,7 @@
 /* app/api/analyze-resumes/route.ts */
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
-import mammoth from "mammoth"; // docx → text (present in your package.json)
+import mammoth from "mammoth";
 import type { Candidate, AnalysisResult, JobRequirements } from "@/types";
 import {
   llmExtractProfile,
@@ -13,7 +13,7 @@ import {
   clamp01,
 } from "@/utils/geminiClient.server";
 
-/** ───────────────────────── Helpers ───────────────────────── */
+/* ───────────────────────── Small utils ───────────────────────── */
 
 function stripHtml(input: string): string {
   return (input || "")
@@ -26,28 +26,88 @@ function stripHtml(input: string): string {
     .trim();
 }
 
-// Robust timeline/“X years” estimator (fallback)
-function estimateYears(text: string): number {
-  const t = (text || "").replace(/\s+/g, " ").toLowerCase();
-  let months = 0;
+const MONTHS = new Map<string, number>([
+  ["jan", 0],["january", 0],
+  ["feb", 1],["february", 1],
+  ["mar", 2],["march", 2],
+  ["apr", 3],["april", 3],
+  ["may", 4],
+  ["jun", 5],["june", 5],
+  ["jul", 6],["july", 6],
+  ["aug", 7],["august", 7],
+  ["sep", 8],["september", 8],
+  ["oct", 9],["october", 9],
+  ["nov",10],["november",10],
+  ["dec",11],["december",11],
+]);
 
-  // “Jan 2020 - Mar 2024”, “2019–present”, etc.
-  const period =
-    /\b(?:(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s*)?(\d{4})\s*(?:-|–|—|to)\s*(?:present|current|now|(?:(?:(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s*)?(\d{4})))\b/gi;
+function ymToIndex(y:number,m:number){ return y*12+m; }
+function indexToYM(k:number){ return {y:Math.floor(k/12), m:k%12}; }
+
+/** Merge month ranges and return total months (deduped) */
+function totalMonthsFromRanges(ranges: Array<{startYM:number,endYM:number}>): number {
+  const seen = new Set<number>();
+  for (const r of ranges) {
+    const a = Math.min(r.startYM, r.endYM);
+    const b = Math.max(r.startYM, r.endYM);
+    for (let k=a; k<=b; k++) seen.add(k);
+  }
+  return seen.size;
+}
+
+/** Very robust years extractor: merges ranges and also handles “X yr Y mo”, “10+ years”, “since 2016”, “6 months” */
+function robustYears(text: string): number {
+  const t = (text || "").replace(/\s+/g, " ").toLowerCase();
+  const now = new Date();
+  const currYM = ymToIndex(now.getFullYear(), now.getMonth());
+  const ranges: Array<{startYM:number,endYM:number}> = [];
+
+  // Month Year — Month Year | Month Year — present | YYYY — YYYY | YYYY — present
+  const dateRange =
+    /\b(?:(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+)?(\d{4})\s*(?:-|–|—|to)\s*(?:present|current|now|(?:(?:(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+)?(\d{4})))\b/g;
   let m: RegExpExecArray | null;
-  while ((m = period.exec(t))) {
-    const y1 = parseInt(m[2], 10);
-    const y2 = m[4] ? parseInt(m[4], 10) : new Date().getFullYear();
-    if (y1 >= 1980 && y1 <= y2 && y2 <= new Date().getFullYear() + 1) {
-      months += (y2 - y1) * 12;
-    }
+  while ((m = dateRange.exec(t))) {
+    const sm = m[1]; const sy = parseInt(m[2],10);
+    const em = m[3]; const ey = m[3] ? parseInt(m[3],10) : NaN;
+    const startMonth = sm && MONTHS.has(sm) ? MONTHS.get(sm)! : 0;
+    const endMonth   = em && MONTHS.has(em) ? MONTHS.get(em)! : 11;
+    const startYM = ymToIndex(sy, startMonth);
+    const endYM   = isNaN(ey) ? currYM : ymToIndex(ey, endMonth);
+    if (sy >= 1980 && startYM <= endYM) ranges.push({ startYM, endYM });
   }
 
-  // “X years of experience”
-  const single = /\b(\d+(?:\.\d+)?)\s*\+?\s*years?\b/i.exec(t);
-  if (single && months === 0) return Math.min(40, parseFloat(single[1]));
+  // "since 2016" / "since Jan 2019"
+  const since =
+    /\bsince\s+(?:(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+)?(\d{4})\b/g;
+  while ((m = since.exec(t))) {
+    const sm = m[1]; const sy = parseInt(m[2],10);
+    const startMonth = sm && MONTHS.has(sm) ? MONTHS.get(sm)! : 0;
+    const startYM = ymToIndex(sy, startMonth);
+    if (sy >= 1980 && startYM <= currYM) ranges.push({ startYM, endYM: currYM });
+  }
 
-  return Math.min(40, Math.round(months / 12));
+  // "X yr Y mo" | "X years Y months" | "X+ years" | only months
+  let numericMonths = 0;
+  const yrMo = /\b(\d+)\s*(?:yr|yrs|year|years)\b(?:\s*(\d+)\s*(?:mo|mos|month|months)\b)?/g;
+  while ((m = yrMo.exec(t))) {
+    const y = parseInt(m[1],10);
+    const mo = m[2] ? parseInt(m[2],10) : 0;
+    if (y >= 0 && y <= 45 && mo >= 0 && mo <= 11) numericMonths = Math.max(numericMonths, y*12+mo);
+  }
+  const plusYears = /\b(\d+)\s*\+\s*years?\b/g;
+  while ((m = plusYears.exec(t))) {
+    const y = parseInt(m[1],10);
+    numericMonths = Math.max(numericMonths, y*12);
+  }
+  const onlyMonths = /\b(\d+)\s*months?\b/g;
+  while ((m = onlyMonths.exec(t))) {
+    const mo = parseInt(m[1],10);
+    if (mo <= 600) numericMonths = Math.max(numericMonths, mo);
+  }
+
+  const monthsFromRanges = totalMonthsFromRanges(ranges);
+  const months = Math.max(monthsFromRanges, numericMonths);
+  return Math.min(45, Math.round(months / 12));
 }
 
 function tokenize(s: string): string[] {
@@ -58,122 +118,120 @@ function tokenize(s: string): string[] {
     .filter(Boolean);
 }
 
-function toSet(xs: string[]): Set<string> {
-  const set = new Set<string>();
-  for (const x of xs) set.add(x.trim().toLowerCase());
-  return set;
+const BAD_SKILLS = new Set(
+  [
+    "problem solving","communication","teamwork","leadership","best","best practices","practices",
+    "proactive","experience","strong","developer","development","customizing","shopify s",
+  ].map((x)=>x.toLowerCase())
+);
+
+function cleanTokens(list: string[]): string[] {
+  return Array.from(
+    new Set(
+      (list || [])
+        .map((x) => String(x || "").trim().toLowerCase())
+        .filter((x) => x.length > 2 && !BAD_SKILLS.has(x))
+    )
+  );
 }
 
+function toSet(xs: string[]): Set<string> {
+  const s = new Set<string>();
+  for (const x of xs) s.add(x.trim().toLowerCase());
+  return s;
+}
 function overlapCount(a: Set<string>, b: Set<string>): number {
   let c = 0;
   for (const x of a) if (b.has(x)) c++;
   return c;
 }
-
-function uniq<T>(arr: T[]): T[] {
-  return Array.from(new Set(arr));
+function jaccard(a: Set<string>, b: Set<string>): number {
+  let inter = 0;
+  for (const x of a) if (b.has(x)) inter++;
+  const union = a.size + b.size - inter;
+  return union ? inter / union : 0;
 }
 
-async function parseBufferAsText(name: string, buf: Buffer): Promise<string> {
-  const lower = (name || "").toLowerCase();
-
-  // DOCX
-  if (lower.endsWith(".docx")) {
-    try {
-      const res = await mammoth.extractRawText({ buffer: buf });
-      return stripHtml(res.value || "");
-    } catch {
-      // continue to fallback
-    }
-  }
-
-  // PDF (optional—use dynamic import to avoid hard build fails if missing)
-  if (lower.endsWith(".pdf")) {
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const pdfParse = (await import("pdf-parse")).default as any;
-      const data = await pdfParse(buf);
-      return stripHtml(data.text || "");
-    } catch {
-      // continue to fallback
-    }
-  }
-
-  // Plain text / unknown
-  return stripHtml(buf.toString("utf8"));
-}
-
-function buildResumeTokenSet(profile: any, rawText: string): Set<string> {
-  const buckets: string[] = [];
-
-  if (Array.isArray(profile?.skills)) buckets.push(...profile.skills);
-  if (Array.isArray(profile?.tools)) buckets.push(...profile.tools);
-  if (Array.isArray(profile?.industryDomains)) buckets.push(...profile.industryDomains);
-
+/** Build a token set representing the resume (profile fields + raw fallback) */
+function buildResumeTokenSet(profile: any, raw: string): Set<string> {
+  const pile: string[] = [];
+  if (Array.isArray(profile?.skills)) pile.push(...profile.skills);
+  if (Array.isArray(profile?.tools)) pile.push(...profile.tools);
+  if (Array.isArray(profile?.industryDomains)) pile.push(...profile.industryDomains);
   if (Array.isArray(profile?.experience)) {
     for (const e of profile.experience) {
-      if (Array.isArray(e?.tech)) buckets.push(...e.tech);
-      if (Array.isArray(e?.achievements)) buckets.push(...e.achievements);
-      if (e?.title) buckets.push(e.title);
-      if (e?.company) buckets.push(e.company);
+      if (Array.isArray(e?.tech)) pile.push(...e.tech);
+      if (Array.isArray(e?.achievements)) pile.push(...e.achievements);
+      if (e?.title) pile.push(e.title);
+      if (e?.company) pile.push(e.company);
+    }
+  }
+  if (profile?.headline) pile.push(profile.headline);
+  if (profile?.summary) pile.push(profile.summary);
+  // fallback: raw tokens too
+  pile.push(...tokenize(raw));
+  return toSet(cleanTokens(pile));
+}
+
+/** Domain decision: tolerant and not hardcoded */
+function computeDomainMatch(kw: JDKeywords, resumeTokens: Set<string>): boolean {
+  const must = toSet(kw.must.map(k => k.name));
+  const nice = toSet(kw.nice.map(k => k.name));
+
+  // Strong signal: any MUST present
+  if (overlapCount(must, resumeTokens) >= 1) return true;
+
+  // Moderate: at least 2 combined overlaps across must+nice
+  const all = new Set<string>([...must, ...nice]);
+  if (overlapCount(all, resumeTokens) >= 2) return true;
+
+  // Soft: Jaccard on token sets
+  const sim = jaccard(all, resumeTokens);
+  return sim >= 0.03; // forgiving
+}
+
+/* ──────────────────────── File extraction ─────────────────────── */
+
+async function extractFromPDF(buf: ArrayBuffer): Promise<string> {
+  try {
+    // Load only if installed; otherwise fall back to blank (no crash)
+    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+    // @ts-ignore
+    const pdfParse = (await import("pdf-parse")).default as any;
+    const out = await pdfParse(Buffer.from(buf));
+    const s = String(out?.text || "");
+    return stripHtml(s);
+  } catch {
+    return "";
+  }
+}
+
+async function extractTextFromFile(f: File): Promise<string> {
+  const type = (f.type || "").toLowerCase();
+  const buf = await f.arrayBuffer();
+
+  if (type.includes("pdf")) {
+    return await extractFromPDF(buf);
+  }
+  if (type.includes("word") || f.name.toLowerCase().endsWith(".docx")) {
+    try {
+      const out = await mammoth.extractRawText({ buffer: Buffer.from(buf) });
+      return stripHtml(out.value || "");
+    } catch {
+      return "";
     }
   }
 
-  // Add some raw text fallback tokens (helps when profile misses items)
-  const rawTokens = tokenize(rawText).slice(0, 600); // cap to avoid bloat
-  buckets.push(...rawTokens);
-
-  // normalize and keep non-trivial tokens
-  const cleaned = buckets
-    .map(String)
-    .map((x) => x.toLowerCase().trim())
-    .filter((x) => x.length >= 3);
-
-  return toSet(cleaned);
+  // plain text / html
+  try {
+    const s = await f.text();
+    return stripHtml(s);
+  } catch {
+    return "";
+  }
 }
 
-function buildJDTokenSet(jd: string, kw: JDKeywords): Set<string> {
-  const buckets: string[] = [];
-
-  for (const k of kw.must || []) {
-    buckets.push(k.name || "");
-    (k.synonyms || []).forEach((s) => buckets.push(s || ""));
-  }
-  for (const k of kw.nice || []) {
-    buckets.push(k.name || "");
-    (k.synonyms || []).forEach((s) => buckets.push(s || ""));
-  }
-
-  // also add JD raw tokens
-  buckets.push(...tokenize(jd));
-
-  const cleaned = buckets
-    .map((x) => x.toLowerCase().trim())
-    .filter((x) => x.length >= 3);
-
-  return toSet(cleaned);
-}
-
-function decideDomainMismatch(jdSet: Set<string>, resumeSet: Set<string>, rawJD: string, rawResume: string): boolean {
-  // primary: intersection
-  if (overlapCount(jdSet, resumeSet) >= 2) return false; // good overlap
-
-  // secondary: fuzzy tries (very light) – if any JD token occurs in resume text
-  const jdTokens = Array.from(jdSet).slice(0, 40); // limit for performance
-  const T = " " + (rawResume || "").toLowerCase() + " ";
-
-  for (const jt of jdTokens) {
-    if (jt.length < 4) continue;
-    if (T.includes(" " + jt + " ") || T.includes(jt)) return false;
-  }
-
-  // guard: if JD is too generic/short, don’t penalize
-  const jdLen = (rawJD || "").split(/\s+/).length;
-  if (jdLen < 30) return false;
-
-  // default: mismatch only when we’re pretty sure there’s no overlap
-  return true;
-}
+/* ───────────────────────── Base candidate ─────────────────────── */
 
 function baseCandidate(id: string): Candidate {
   return {
@@ -190,121 +248,118 @@ function baseCandidate(id: string): Candidate {
     matchScore: 0,
     skillsEvidencePct: 0,
     domainMismatch: false,
-    strengths: [],
-    weaknesses: [],
-    gaps: [],
-    mentoringNeeds: [],
+    yearsScore: 0,
+    eduScore: 0,
   };
 }
 
-/** ───────────────────────── Route ───────────────────────── */
+/* ───────────────────────────── Route ──────────────────────────── */
 
-export const runtime = "nodejs"; // make sure we’re on the Node runtime for Buffer
+export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
   try {
     const form = await req.formData();
 
-    const jdRaw = String(form.get("jobRequirements") || "{}");
-    const job: JobRequirements = JSON.parse(jdRaw);
+    // Job Requirements
+    const rawJR = form.get("jobRequirements") as string;
+    const jr: JobRequirements = rawJR ? JSON.parse(rawJR) : {
+      title: "",
+      description: "",
+      minYearsExperience: 0,
+      educationLevel: "",
+    };
 
-    const resumes: File[] = [];
-    form.forEach((v, k) => {
-      if (k === "resumes" && v instanceof File) resumes.push(v);
-    });
-    if (!resumes.length) {
-      return NextResponse.json(
-        { error: "No resumes found in the request." },
-        { status: 400 }
-      );
+    // Resumes
+    const files = form.getAll("resumes").filter(Boolean) as File[];
+    if (!files.length) {
+      return NextResponse.json({ error: "No resumes" }, { status: 400 });
     }
 
     // Derive JD keywords once
-    const jdText = `${job.title || ""}\n${job.description || ""}\n${job.educationLevel || ""}`;
-    const jdKw = await llmDeriveKeywords(jdText);
-    const jdSet = buildJDTokenSet(jdText, jdKw);
+    const kw = await llmDeriveKeywords(`${jr.title}\n\n${jr.description || ""}`);
 
-    const outCandidates: Candidate[] = [];
+    const results: Candidate[] = [];
 
-    for (const file of resumes) {
-      const ab = await file.arrayBuffer();
-      const buf = Buffer.from(ab);
-      const text = await parseBufferAsText(file.name || "upload", buf);
-
-      const profile = await llmExtractProfile(text);
-
+    for (const file of files) {
       const id = crypto.randomBytes(8).toString("hex");
       const cand = baseCandidate(id);
 
-      // Fill personal/profile data (guarding optional fields)
+      const raw = await extractTextFromFile(file);
+      if (!raw) {
+        // keep as blank candidate with domainMismatch true (no evidence)
+        cand.domainMismatch = true;
+        results.push(cand);
+        continue;
+      }
+
+      // LLM profile (deterministic)
+      const profile = await llmExtractProfile(raw);
+
+      // Fill visible basics
       cand.name = profile?.name || "";
       cand.email = profile?.email || "";
       cand.phone = profile?.phone || "";
       cand.location = profile?.location || "";
       cand.title = profile?.headline || profile?.title || "";
       cand.summary = profile?.summary || "";
-      cand.education = mapEduLevel(
-        Array.isArray(profile?.education) && profile.education[0]?.degree
-          ? profile.education[0].degree
-          : profile?.educationSummary || ""
-      );
 
-      // Skills (dedup)
-      const skills = uniq([
-        ...(Array.isArray(profile?.skills) ? profile.skills : []),
-        ...(Array.isArray(profile?.tools) ? profile.tools : []),
-      ]).slice(0, 50);
-      cand.skills = skills;
-
-      // Experience years
-      const profileYears = Number(profile?.yearsExperience || 0);
-      const heuristicYears = estimateYears(text);
-      cand.yearsExperience = Math.max(
-        Number.isFinite(profileYears) ? profileYears : 0,
-        heuristicYears
-      );
-
-      // Heuristic keyword coverage for scoring
-      const heuristic = scoreHeuristically(text, jdKw);
-      const coverage = clamp01(heuristic.coverage);
-      cand.skillsEvidencePct = Math.round(coverage * 100);
-
-      // Domain matching (forgiving)
-      const resumeSet = buildResumeTokenSet(profile, text);
-      const mismatch = decideDomainMismatch(jdSet, resumeSet, jdText, text);
-      cand.domainMismatch = mismatch;
-
-      // Education fit
-      const eduScore = eduFit(job.educationLevel || "", cand.education || "");
-      const yrsFit =
-        job.minYearsExperience && job.minYearsExperience > 0
-          ? clamp01(cand.yearsExperience / job.minYearsExperience)
-          : 0.7;
-
-      let score = 0;
-      if (mismatch) {
-        // If domain is not matching, clamp very low
-        score = 8 + Math.round(coverage * 10); // 8–18%
-      } else {
-        // Blend coverage (skills evidence) + edu + yrs
-        const blended =
-          0.65 * coverage + 0.2 * clamp01(eduScore) + 0.15 * clamp01(yrsFit);
-        score = Math.round(100 * clamp01(blended));
+      // Education (mapped to a single string for card)
+      let eduStr = "";
+      if (Array.isArray(profile?.education) && profile.education.length) {
+        const e0 = profile.education[0];
+        eduStr = [mapEduLevel(e0?.degree || ""), e0?.field].filter(Boolean).join(" ");
+      } else if (profile?.educationSummary) {
+        eduStr = String(profile.educationSummary);
       }
-      cand.matchScore = score;
+      cand.education = eduStr || "";
 
-      outCandidates.push(cand);
+      // Years of experience: prefer LLM, fallback to robust parser
+      let years = 0;
+      if (typeof profile?.yearsExperience === "number" && profile.yearsExperience > 0) {
+        years = Math.min(45, Math.round(profile.yearsExperience));
+      } else {
+        years = robustYears(raw);
+      }
+      cand.yearsExperience = years;
+
+      // Skill chips (clean)
+      const skillChips = cleanTokens(
+        Array.isArray(profile?.skills) ? profile.skills : []
+      ).slice(0, 12);
+      cand.skills = skillChips;
+
+      // Domain decision (tolerant)
+      const resumeTokens = buildResumeTokenSet(profile, raw);
+      const domainMatch = computeDomainMatch(kw, resumeTokens);
+      cand.domainMismatch = !domainMatch;
+
+      // Heuristic coverage -> skillsEvidencePct
+      const h = scoreHeuristically(raw, kw);
+      cand.skillsEvidencePct = Math.round(clamp01(h.coverage) * 100);
+
+      // Years & education score components
+      const reqY = Math.max(0, Number(jr.minYearsExperience || 0));
+      const yScore = reqY ? clamp01(years / reqY) : clamp01(years / 6); // 6y typical ramp
+      const eScore = eduFit(jr.educationLevel || "", cand.education || "");
+
+      cand.yearsScore = yScore;
+      cand.eduScore = eScore;
+
+      // Final match score (bounded & rounded)
+      const match =
+        0.65 * h.coverage + 0.25 * yScore + 0.10 * eScore;
+
+      cand.matchScore = Math.round(clamp01(domainMatch ? match : match * 0.2) * 100);
+
+      results.push(cand);
     }
 
-    const payload: AnalysisResult = {
-      candidates: outCandidates,
-    };
+    // Sort client might resort; we just return raw list
+    const payload: AnalysisResult = { candidates: results };
     return NextResponse.json(payload, { status: 200 });
   } catch (e: any) {
     console.error(e);
-    return NextResponse.json(
-      { error: e?.message || "Failed to analyze resumes." },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: String(e?.message || e) }, { status: 500 });
   }
 }
