@@ -4,8 +4,11 @@ export type UploadedFile = {
   name: string;
   type: string;
   size: number;
-  /** Original binary/text content captured in the browser. */
-  content: ArrayBuffer | Uint8Array | string;
+  /**
+   * Original browser-captured content.
+   * We allow several buffer-like types to avoid lib mismatches (ArrayBuffer vs SharedArrayBuffer).
+   */
+  content: ArrayBuffer | SharedArrayBuffer | Uint8Array | string;
 };
 
 export type Candidate = {
