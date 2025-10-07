@@ -4,7 +4,7 @@ export interface JobRequirements {
   title: string;
   description: string;
   minYearsExperience?: number;
-  educationLevel?: string; // e.g., "Bachelor", "Master"
+  educationLevel?: string; // "Bachelor" | "Master" | "PhD" | etc.
 }
 
 export interface UploadedFile {
@@ -12,23 +12,19 @@ export interface UploadedFile {
   name: string;
   type: string;
   size: number;
-  // Keep the native File so we can send it directly in FormData
-  file?: File;
-  // Optional raw content if you keep custom shape in state
-  content?: string | ArrayBuffer | Uint8Array;
+  file?: File; // Prefer real File for FormData
+  content?: string | ArrayBuffer | Uint8Array; // optional legacy
 }
 
 export interface Candidate {
   id: string;
 
-  // personal / extracted
   name: string;
   email: string;
   phone: string;
   location: string;
   title: string;
 
-  // scoring
   yearsExperience: number;
   education: string;
   skills: string[];
@@ -43,7 +39,6 @@ export interface Candidate {
   gaps: string[];
   mentoringNeeds: string[];
 
-  // extra fields used by UI
   questions: string[];
   educationSummary: string;
   formatted: string;
