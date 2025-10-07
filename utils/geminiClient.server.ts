@@ -1,3 +1,4 @@
+// utils/geminiClient.server.ts
 import {
   GoogleGenerativeAI,
   HarmBlockThreshold,
@@ -115,55 +116,11 @@ export function mapEduLevel(s: string): string {
   if (/intermediate|high school|hs/i.test(x)) return "Intermediate/High School";
   return s || "";
 }
-export function eduFit(required?: string, have?: string): number {
-  const r = (required || "").toLowerCase();
-  const h = (have || "").toLowerCase();
-  if (!r) return 0.7;
-  if (r.includes("phd")) return h.includes("phd") ? 1 : 0.6;
-  if (r.includes("master"))
-    return h.match(/phd|master/) ? 1 : h.includes("bachelor") ? 0.7 : 0.4;
-  if (r.includes("bachelor")) return h.match(/phd|master|bachelor/) ? 1 : 0.5;
-  return h ? 0.7 : 0.3;
-}
 export function clamp01(n: number) {
   return Math.max(0, Math.min(1, n));
 }
-export function cleanTokens(list: string[]): string[] {
-  const BAD = new Set(
-    [
-      "best",
-      "practices",
-      "best practices",
-      "proactive",
-      "experience",
-      "strong",
-      "developer",
-      "development",
-      "customizing",
-      "customizing shopify",
-      "shopify s",
-      "understanding",
-      "skills",
-      "knowledge",
-    ].map((s) => s.toLowerCase())
-  );
-  return Array.from(
-    new Set(
-      (list || [])
-        .map((x) => String(x || "").trim())
-        .filter(Boolean)
-        .map((x) => x.replace(/\.+$/g, "").toLowerCase())
-        .filter((x) => x.length > 2 && !BAD.has(x))
-    )
-  );
-}
 
-/** ───────────── robust experience estimator ─────────────
- *  Handles:
- *  - "Jan 2019 – Present", "2018-2022", "MM/YYYY - MM/YYYY"
- *  - stacked roles; sums disjoint periods (caps overlap)
- *  - "X years" only fallback
- */
+/** ───────────── robust experience estimator ───────────── */
 function parseMonth(s: string): number | null {
   const idx = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"].indexOf(
     s.slice(0,3).toLowerCase()
@@ -177,7 +134,7 @@ export function estimateYears(text: string): number {
   const periods: Period[] = [];
   const curYear = new Date().getFullYear();
 
-  // 1) Month Year – Month Year / Present
+  // Month Year – Month Year / Present
   const re1 =
     /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\.?\s+(\d{4})\s*(?:-|–|—|to)\s*(?:present|current|now|(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\.?\s+(\d{4}))\b/gi;
   let m: RegExpExecArray | null;
@@ -187,27 +144,21 @@ export function estimateYears(text: string): number {
     const m2 = m[3] ? parseMonth(m[3]) ?? 11 : new Date().getMonth();
     const y2 = m[4] ? parseInt(m[4], 10) : curYear;
     if (y1 >= 1980 && y1 <= y2 && y2 <= curYear + 1) {
-      periods.push({
-        from: new Date(y1, m1, 1),
-        to: new Date(y2, m2, 1),
-      });
+      periods.push({ from: new Date(y1, m1, 1), to: new Date(y2, m2, 1) });
     }
   }
 
-  // 2) Year – Year
+  // Year – Year
   const re2 = /\b(\d{4})\s*(?:-|–|—|to)\s*(present|current|now|\d{4})\b/g;
   while ((m = re2.exec(t))) {
     const y1 = parseInt(m[1], 10);
     const y2 = /present|current|now/.test(m[2]) ? curYear : parseInt(m[2], 10);
     if (y1 >= 1980 && y1 <= y2 && y2 <= curYear + 1) {
-      periods.push({
-        from: new Date(y1, 0, 1),
-        to: new Date(y2, 11, 1),
-      });
+      periods.push({ from: new Date(y1, 0, 1), to: new Date(y2, 11, 1) });
     }
   }
 
-  // Merge overlaps
+  // Merge overlapping
   periods.sort((a, b) => a.from.getTime() - b.from.getTime());
   const merged: Period[] = [];
   for (const p of periods) {
@@ -216,17 +167,16 @@ export function estimateYears(text: string): number {
       const last = merged[merged.length - 1];
       if (p.from <= last.to) {
         if (p.to > last.to) last.to = p.to;
-      } else {
-        merged.push(p);
-      }
+      } else merged.push(p);
     }
   }
+
   let months = 0;
   for (const p of merged) {
     months += (p.to.getFullYear() - p.from.getFullYear()) * 12 + (p.to.getMonth() - p.from.getMonth()) + 1;
   }
 
-  // 3) “X years” fallback if nothing parsed
+  // fallback “X years”
   const single = /\b(\d+(?:\.\d+)?)\s*\+?\s*years?\b/i.exec(t);
   if (months === 0 && single) return Math.min(40, parseFloat(single[1]));
 
@@ -238,6 +188,7 @@ export type JDKeywords = {
   must: { name: string; synonyms: string[] }[];
   nice: { name: string; synonyms: string[] }[];
 };
+
 const STOP_WORDS = new Set(
   [
     "the","a","an","and","or","of","for","to","in","on","at","by","with","from","as",
@@ -247,6 +198,7 @@ const STOP_WORDS = new Set(
     "experience","years","team","work","ability","skills","plus","including","etc",
   ].map((s) => s.toLowerCase())
 );
+
 function tokenizeJD(jd: string): string[] {
   return (jd || "")
     .toLowerCase()
@@ -278,14 +230,14 @@ function localSynonyms(term: string): string[] {
   out.add(t.replace(/\s+/g, "-"));
   out.add(t.replace(/\s+/g, "."));
   out.add(t.replace(/[-._]/g, " "));
-  if (t.endsWith("s")) out.add(t.slice(0, -1));
-  else out.add(t + "s");
+  if (t.endsWith("s")) out.add(t.slice(0, -1)); else out.add(t + "s");
   out.add(t.replace(/javascript/i, "js"));
   out.add(t.replace(/\bjs\b/i, "javascript"));
   out.add(t.replace(/user experience/i, "ux"));
   out.add(t.replace(/user interface/i, "ui"));
   return Array.from(out).filter(Boolean);
 }
+
 export async function llmDeriveKeywords(jdText: string): Promise<JDKeywords> {
   const prompt = `
 From the JOB DESCRIPTION below, extract hiring themes/competencies as keywords WITH realistic synonyms. Use only JD content.
@@ -306,28 +258,18 @@ JOB DESCRIPTION:
 """${(jdText || "").slice(0, 12000)}"""
 `;
   const model = await jsonModel(0);
-  const res = await withRetry(
-    () => model.generateContent(prompt),
-    "jd-keywords"
-  );
+  const res = await withRetry(() => model.generateContent(prompt), "jd-keywords");
   let out = j<JDKeywords>(res.response.text());
 
   if (!out || (!out.must?.length && !out.nice?.length)) {
     const terms = topTermsFromJD(jdText, 20);
-    const must = terms.slice(0, 10).map((name) => ({
-      name,
-      synonyms: localSynonyms(name),
-    }));
-    const nice = terms.slice(10, 18).map((name) => ({
-      name,
-      synonyms: localSynonyms(name),
-    }));
+    const must = terms.slice(0, 10).map((name) => ({ name, synonyms: localSynonyms(name) }));
+    const nice = terms.slice(10, 18).map((name) => ({ name, synonyms: localSynonyms(name) }));
     out = { must, nice };
   }
 
   const norm = (s: string) => s.toLowerCase().trim();
-  const uniq = (arr: string[]) =>
-    Array.from(new Set(arr.map(norm))).filter(Boolean);
+  const uniq = (arr: string[]) => Array.from(new Set(arr.map(norm))).filter(Boolean);
 
   out.must = (out.must || [])
     .map((k) => ({
@@ -335,6 +277,7 @@ JOB DESCRIPTION:
       synonyms: uniq([...(k.synonyms || []), ...localSynonyms(k.name || "")]),
     }))
     .filter((k) => k.name);
+
   out.nice = (out.nice || [])
     .map((k) => ({
       name: norm(k.name || ""),
@@ -344,19 +287,13 @@ JOB DESCRIPTION:
 
   if (!out.must.length && !out.nice.length) {
     const terms = topTermsFromJD(jdText, 16);
-    out.must = terms.slice(0, 8).map((name) => ({
-      name,
-      synonyms: localSynonyms(name),
-    }));
-    out.nice = terms.slice(8, 16).map((name) => ({
-      name,
-      synonyms: localSynonyms(name),
-    }));
+    out.must = terms.slice(0, 8).map((name) => ({ name, synonyms: localSynonyms(name) }));
+    out.nice = terms.slice(8, 16).map((name) => ({ name, synonyms: localSynonyms(name) }));
   }
   return out;
 }
 
-/** ───────────── Fuzzy scoring ───────────── */
+/** ───────────── Fuzzy scoring over resume ───────────── */
 export type HeuristicScore = {
   coverage: number; // 0..1
   matched: string[];
@@ -383,10 +320,7 @@ function fuzzyContains(text: string, phrase: string): boolean {
   }
   return false;
 }
-export function scoreHeuristically(
-  resumeText: string,
-  kw: JDKeywords
-): HeuristicScore {
+export function scoreHeuristically(resumeText: string, kw: JDKeywords): HeuristicScore {
   const text = resumeText.toLowerCase();
   const must = kw.must.map((k) => ({ canon: k.name, syns: [k.name, ...k.synonyms] }));
   const nice = kw.nice.map((k) => ({ canon: k.name, syns: [k.name, ...k.synonyms] }));
@@ -406,11 +340,9 @@ export function scoreHeuristically(
 }
 
 /** ───────────── Domain similarity (automatic) ───────────── */
-function ngrams(words: string[], n: 1|2|3): string[] {
+function ngrams(words: string[], n: 1 | 2 | 3): string[] {
   const out: string[] = [];
-  for (let i = 0; i + n <= words.length; i++) {
-    out.push(words.slice(i, i + n).join(" "));
-  }
+  for (let i = 0; i + n <= words.length; i++) out.push(words.slice(i, i + n).join(" "));
   return out;
 }
 function bag(text: string): Map<string, number> {
@@ -419,29 +351,22 @@ function bag(text: string): Map<string, number> {
     .replace(/[^a-z0-9 ]+/g, " ")
     .split(/\s+/)
     .filter((t) => t && !STOP_WORDS.has(t));
-  const grams = [
-    ...tokens,
-    ...ngrams(tokens,1),
-    ...ngrams(tokens,2),
-    ...ngrams(tokens,3),
-  ];
+  const grams = [...tokens, ...ngrams(tokens, 1), ...ngrams(tokens, 2), ...ngrams(tokens, 3)];
   const m = new Map<string, number>();
   for (const g of grams) m.set(g, (m.get(g) || 0) + 1);
   return m;
 }
 function cosine(a: Map<string, number>, b: Map<string, number>) {
   let dot = 0, na = 0, nb = 0;
-  for (const [,v] of a) na += v*v;
-  for (const [,v] of b) nb += v*v;
+  for (const [, v] of a) na += v * v;
+  for (const [, v] of b) nb += v * v;
   const keys = new Set([...a.keys(), ...b.keys()]);
-  for (const k of keys) dot += (a.get(k)||0) * (b.get(k)||0);
+  for (const k of keys) dot += (a.get(k) || 0) * (b.get(k) || 0);
   if (na === 0 || nb === 0) return 0;
   return dot / (Math.sqrt(na) * Math.sqrt(nb));
 }
 export function domainSimilarity(jdText: string, resumeText: string): number {
-  const a = bag(jdText);
-  const b = bag(resumeText);
-  return cosine(a, b); // 0..1
+  return cosine(bag(jdText), bag(resumeText)); // 0..1
 }
 
 /** ───────────── LLM extract / grade ───────────── */
@@ -463,17 +388,18 @@ Return ONLY JSON:
   "education": [{"degree":"","field":"","institution":"","start":"","end":""}],
   "experience": [{"title":"","company":"","location":"","start":"","end":"","achievements":["..."],"tech":["..."]}],
   "links": {"portfolio":"","github":"","linkedin":"","other":[]},
-  "yearsExperience": 0
+  "yearsExperience": 0,
+  "strengths": ["..."],
+  "weaknesses": ["..."],
+  "missingSkills": ["..."],
+  "questions": ["..."]
 }
 
 RESUME:
 """${(resumeText || "").slice(0, 16000)}"""
 `;
   const model = await jsonModel(0);
-  const res = await withRetry(
-    () => model.generateContent(prompt),
-    "extract-profile"
-  );
+  const res = await withRetry(() => model.generateContent(prompt), "extract-profile");
   return j<any>(res.response.text()) || {};
 }
 
@@ -501,10 +427,7 @@ RESUME:
 """${(resumeText || "").slice(0, 16000)}"""
 `;
   const model = await jsonModel(0);
-  const res = await withRetry(
-    () => model.generateContent(prompt),
-    "grade-candidate"
-  );
+  const res = await withRetry(() => model.generateContent(prompt), "grade-candidate");
   const out = j<any>(res.response.text()) || {};
   out.score = Math.max(0, Math.min(100, Number(out.score || 0)));
   if (!Array.isArray(out.questions)) out.questions = [];
