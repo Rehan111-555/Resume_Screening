@@ -1,7 +1,7 @@
 // components/UploadBox.tsx
 "use client";
 
-import * as React from "react";
+import { useRef } from "react";
 import type { UploadedFile } from "@/types";
 
 type Props = {
@@ -10,90 +10,66 @@ type Props = {
 };
 
 export default function UploadBox({ uploadedFiles, onFilesUpload }: Props) {
-  const inputRef = React.useRef<HTMLInputElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
 
-  function handlePickClick() {
+  function onPick() {
     inputRef.current?.click();
   }
 
-  function handleFilesSelected(e: React.ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(e.target.files ?? []);
-    if (!files.length) return;
+  function onChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const list = Array.from(e.target.files || []);
+    if (!list.length) return;
 
-    const mapped: UploadedFile[] = files.map((f) => ({
-      name: f.name,
-      type: f.type || "application/octet-stream",
-      size: f.size,
-      file: f, // keep native File so the POST step can construct FormData easily
+    const newOnes: UploadedFile[] = list.map((f) => ({
+      id: crypto.randomUUID(),
+      file: f,
     }));
 
-    onFilesUpload([...uploadedFiles, ...mapped]);
-    // reset input so same file can be selected again if needed
-    e.target.value = "";
+    onFilesUpload([...uploadedFiles, ...newOnes]);
+    e.currentTarget.value = "";
   }
 
-  function removeByIndex(idx: number) {
-    const next = uploadedFiles.filter((_, i) => i !== idx);
-    onFilesUpload(next);
+  function removeFile(id: string) {
+    onFilesUpload(uploadedFiles.filter((u) => u.id !== id));
   }
 
   return (
-    <div className="border-2 border-dashed rounded-xl p-6 text-center">
+    <div className="rounded-xl border border-gray-200 p-4">
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={onPick}
+          className="px-4 py-2 rounded-lg bg-indigo-600 text-white hover:opacity-90"
+        >
+          Select files
+        </button>
+        <span className="text-sm text-gray-500">PDF / DOCX / TXT (up to 100)</span>
+      </div>
+
       <input
         ref={inputRef}
         type="file"
-        accept=".pdf,.doc,.docx,.rtf,.txt"
         multiple
-        onChange={handleFilesSelected}
+        accept=".pdf,.doc,.docx,.txt,.rtf"
         className="hidden"
+        onChange={onChange}
       />
 
-      <div className="space-y-3">
-        <p className="text-gray-700">
-          Drag & drop resumes here, or{" "}
-          <button
-            type="button"
-            onClick={handlePickClick}
-            className="text-indigo-600 hover:underline"
-          >
-            browse files
-          </button>
-          .
-        </p>
-        <p className="text-xs text-gray-500">
-          Supported: PDF, DOC, DOCX, RTF, TXT (up to 100 files)
-        </p>
-      </div>
-
-      {/* List of selected files */}
       {uploadedFiles.length > 0 && (
-        <div className="mt-5 text-left">
-          <h4 className="font-medium mb-2">Selected files</h4>
-          <ul className="divide-y border rounded-lg">
-            {uploadedFiles.map((f, i) => (
-              <li
-                key={`${f.name}-${f.size}-${i}`}
-                className="flex items-center justify-between px-4 py-2"
+        <ul className="mt-4 space-y-2">
+          {uploadedFiles.map((u) => (
+            <li key={u.id} className="flex items-center justify-between text-sm">
+              <span className="truncate">{u.file.name}</span>
+              <button
+                type="button"
+                className="text-rose-600 hover:underline"
+                onClick={() => removeFile(u.id)}
               >
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-medium text-gray-900">
-                    {f.name}
-                  </p>
-                  <p className="text-xs text-gray-500">
-                    {(f.size / 1024).toFixed(1)} KB • {f.type || "unknown"}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => removeByIndex(i)}
-                  className="text-rose-600 text-sm hover:underline"
-                >
-                  Remove
-                </button>
-              </li>
-            ))}
-          </ul>
-        </div>
+                remove
+              </button>
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );
