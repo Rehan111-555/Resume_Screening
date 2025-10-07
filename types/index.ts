@@ -1,3 +1,4 @@
+// types/index.ts
 export type JobRequirements = {
   role?: string;
   title?: string;
@@ -5,6 +6,12 @@ export type JobRequirements = {
   description?: string;
   requiredSkills?: string[];
   niceToHave?: string[];
+
+  // ⬇️ NEW — matches your job-requirements UI
+  minYearsExperience?: number;   // e.g. 2, 4, 5
+  educationLevel?: string;       // e.g. "Bachelor", "Master", "PhD"
+
+  // keep older fields for compatibility
   education?: string;
   domain?: string;
 };
@@ -14,7 +21,7 @@ export type UploadedFile = {
   name: string;
   size: number;
   type: string;
-  file: File; // keep native file to send as-is
+  file: File;
 };
 
 export type Candidate = {
@@ -50,5 +57,5 @@ export type Candidate = {
 
 export type AnalysisResult = {
   candidates: Candidate[];
-  jdText?: string; // helpful for debugging; optional so type never breaks
+  jdText?: string;
 };
