@@ -1,7 +1,7 @@
 // components/UploadBox.tsx
 "use client";
 
-import React, { useRef, useState } from "react";
+import React, { useRef, useState, useCallback } from "react";
 import type { UploadedFile } from "@/types";
 
 type Props = {
@@ -10,9 +10,7 @@ type Props = {
 };
 
 function uid() {
-  if (typeof crypto !== "undefined" && crypto.randomUUID) {
-    return crypto.randomUUID();
-  }
+  if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
   return `f_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 }
 
@@ -20,65 +18,112 @@ export default function UploadBox({ uploadedFiles, onFilesUpload }: Props) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [isOver, setIsOver] = useState(false);
 
-  async function handlePick(e: React.ChangeEvent<HTMLInputElement>) {
-    setErr(null);
-    const files = Array.from(e.target.files ?? []);
-    if (!files.length) return;
-
-    setBusy(true);
-    try {
-      const next: UploadedFile[] = [...uploadedFiles];
-
-      for (const f of files) {
-        // Read file bytes into ArrayBuffer
-        const buf = await f.arrayBuffer();
-
-        next.push({
-          id: uid(),
-          name: f.name,
-          type: f.type || "application/octet-stream",
-          size: f.size,
-          // store raw bytes according to our type
-          content: buf,
-        });
+  const processFiles = useCallback(
+    async (files: File[]) => {
+      setErr(null);
+      if (!files.length) return;
+      setBusy(true);
+      try {
+        const next: UploadedFile[] = [...uploadedFiles];
+        for (const f of files) {
+          const buf = await f.arrayBuffer();
+          next.push({
+            id: uid(),
+            name: f.name,
+            type: f.type || "application/octet-stream",
+            size: f.size,
+            content: buf,
+          });
+        }
+        onFilesUpload(next);
+      } catch (e: any) {
+        setErr(e?.message || "Failed to read file(s).");
+      } finally {
+        setBusy(false);
       }
+    },
+    [uploadedFiles, onFilesUpload]
+  );
 
-      onFilesUpload(next);
-      // clear the input so the same file can be chosen again if needed
-      if (inputRef.current) inputRef.current.value = "";
-    } catch (e: any) {
-      setErr(e?.message || "Failed to read file(s).");
-    } finally {
-      setBusy(false);
-    }
+  function openPicker() {
+    inputRef.current?.click();
+  }
+
+  async function onPick(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files ?? []);
+    await processFiles(files);
+    if (inputRef.current) inputRef.current.value = "";
+  }
+
+  function onDragOver(e: React.DragEvent) {
+    e.preventDefault();
+    setIsOver(true);
+  }
+  function onDragLeave(e: React.DragEvent) {
+    e.preventDefault();
+    setIsOver(false);
+  }
+  async function onDrop(e: React.DragEvent) {
+    e.preventDefault();
+    setIsOver(false);
+    const files = Array.from(e.dataTransfer.files ?? []);
+    await processFiles(files);
   }
 
   function remove(id: string) {
-    const next = uploadedFiles.filter((u) => u.id !== id);
-    onFilesUpload(next);
+    onFilesUpload(uploadedFiles.filter((u) => u.id !== id));
   }
 
   return (
     <div className="rounded-xl border border-gray-200 bg-white">
-      <div className="p-4 flex items-center gap-3">
-        <input
-          ref={inputRef}
-          type="file"
-          multiple
-          accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-          onChange={handlePick}
-          className="block w-full text-sm text-gray-700 file:mr-4 file:rounded-md file:border-0 file:bg-indigo-600 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white hover:file:bg-indigo-700"
-          disabled={busy}
-        />
+      {/* Hidden native input; triggered by button */}
+      <input
+        ref={inputRef}
+        type="file"
+        multiple
+        accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        onChange={onPick}
+        className="hidden"
+      />
+
+      {/* Dropzone + button */}
+      <div
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
+        className={[
+          "p-6 border-b border-gray-200 transition",
+          isOver ? "bg-indigo-50" : "bg-white",
+        ].join(" ")}
+      >
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <div className="text-sm font-medium text-gray-900">
+              Drag & drop PDF/DOCX files here
+            </div>
+            <div className="text-xs text-gray-500">…or click the button to pick files</div>
+          </div>
+
+          <button
+            onClick={openPicker}
+            disabled={busy}
+            className="rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+          >
+            Choose files
+          </button>
+        </div>
       </div>
 
-      {err && <div className="px-4 pb-2 text-sm text-red-600">{err}</div>}
+      {/* Error */}
+      {err && <div className="px-4 py-2 text-sm text-red-600">{err}</div>}
 
-      <div className="border-t border-gray-200">
+      {/* List */}
+      <div>
         {uploadedFiles.length === 0 ? (
           <div className="px-4 py-6 text-sm text-gray-500">
-            No files added yet. Choose PDF or DOCX (you can select multiple).
+            No files added by your uploader.
           </div>
         ) : (
           <ul className="divide-y divide-gray-200">
