@@ -1,136 +1,144 @@
-// app/results/page.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { useApp } from "@/contexts/AppContext";
-import type { AnalysisResult } from "@/types";
+import React, { useEffect, useMemo, useState } from "react";
+import CandidateCard from "@/components/CandidateCard";
+import type { UploadedFile } from "@/types";
+
+type JobRequirements = {
+  description?: string;
+  minYearsExperience?: number;
+  educationLevel?: string;
+  role?: string;
+  requiredSkills?: string[];
+  niceToHave?: string[];
+};
+
+type Candidate = {
+  id: string;
+  name: string;
+  title: string;
+  yearsExperience: number;
+  education: string;
+  skills: string[];
+  summary: string;
+  matchScore: number;
+};
+
+type AnalysisResult = {
+  jd: JobRequirements;
+  candidates: Candidate[];
+};
+
+function toBlobFromArrayBuffer(buf: ArrayBuffer, type = "application/octet-stream") {
+  return new Blob([new Uint8Array(buf)], { type });
+}
 
 export default function ResultsPage() {
-  const { state, dispatch } = useApp();
-  const [localResult, setLocalResult] = useState<AnalysisResult | null>(
-    state.analysisResult
-  );
+  const [data, setData] = useState<AnalysisResult | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
 
-  // Hydrate from sessionStorage if context empty (hard reload safe)
+  // restore persisted analysis if any
   useEffect(() => {
-    if (!state.analysisResult && typeof window !== "undefined") {
-      const raw = sessionStorage.getItem("analysisResult");
-      if (raw) {
-        try {
-          const parsed: AnalysisResult = JSON.parse(raw);
-          dispatch({ type: "SET_ANALYSIS_RESULT", payload: parsed });
-          setLocalResult(parsed);
-        } catch {
-          setLocalResult(null);
-        }
-      } else {
-        setLocalResult(null);
-      }
-    } else {
-      setLocalResult(state.analysisResult);
-    }
-  }, [state.analysisResult, dispatch]);
-
-  const allText = useMemo(() => {
-    const res = localResult;
-    if (!res?.candidates?.length) return "";
-    return res.candidates
-      .map((c) => c.formatted || "")
-      .filter(Boolean)
-      .join("\n---\n\n");
-  }, [localResult]);
-
-  async function copyAll() {
-    if (!allText) return;
     try {
-      await navigator.clipboard.writeText(allText);
-      alert("All candidate details copied.");
-    } catch {
-      const ta = document.createElement("textarea");
-      ta.value = allText;
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand("copy");
-      ta.remove();
-      alert("All candidate details copied.");
-    }
+      const cached = sessionStorage.getItem("analysis");
+      if (cached) {
+        const parsed = JSON.parse(cached) as AnalysisResult;
+        setData(parsed);
+        return;
+      }
+    } catch {}
+  }, []);
+
+  // if no analysis, but have files in sessionStorage, call API
+  useEffect(() => {
+    (async () => {
+      if (data) return; // already have it
+      try {
+        const rawFiles = sessionStorage.getItem("uploadedFiles");
+        if (!rawFiles) return;
+        const files: UploadedFile[] = JSON.parse(rawFiles);
+
+        const rawJD = sessionStorage.getItem("jobRequirements");
+        const jd: JobRequirements = rawJD ? JSON.parse(rawJD) : {};
+
+        if (!files.length) return;
+
+        setLoading(true);
+        setErr(null);
+
+        const form = new FormData();
+        form.append("jobRequirements", JSON.stringify(jd));
+        for (const f of files) {
+          const blob = toBlobFromArrayBuffer(f.content, f.type || "application/octet-stream");
+          form.append("resumes", new File([blob], f.name, { type: f.type || "application/octet-stream" }));
+        }
+
+        const res = await fetch("/api/analyze-resumes", { method: "POST", body: form });
+        if (!res.ok) {
+          const msg = await res.text();
+          throw new Error(msg || `Analyze failed (${res.status})`);
+        }
+        const payload: AnalysisResult = await res.json();
+        setData(payload);
+        sessionStorage.setItem("analysis", JSON.stringify(payload));
+      } catch (e: any) {
+        setErr(e?.message || "Failed to analyze resumes.");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [data]);
+
+  if (err) {
+    return (
+      <div className="max-w-6xl mx-auto px-4 py-10">
+        <h1 className="text-2xl font-bold">Results</h1>
+        <p className="mt-4 text-red-600">{err}</p>
+      </div>
+    );
   }
 
-  if (!localResult?.candidates?.length) {
+  if (loading) {
     return (
-      <main className="max-w-5xl mx-auto px-4 py-8">
-        <h1 className="text-2xl font-bold mb-4">Results</h1>
-        <p className="text-gray-600">No analysis data found.</p>
-      </main>
+      <div className="max-w-6xl mx-auto px-4 py-10">
+        <h1 className="text-2xl font-bold">Results</h1>
+        <p className="mt-4 text-gray-600">Analyzing resumes…</p>
+      </div>
+    );
+  }
+
+  if (!data) {
+    return (
+      <div className="max-w-6xl mx-auto px-4 py-10">
+        <h1 className="text-2xl font-bold">Results</h1>
+        <p className="mt-4 text-gray-600">No analysis data found.</p>
+      </div>
     );
   }
 
   return (
-    <main className="max-w-6xl mx-auto px-4 py-8">
-      <div className="mb-4 flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Results</h1>
-        <button
-          onClick={copyAll}
-          className="px-4 py-2 rounded-lg bg-indigo-600 text-white hover:opacity-90"
-        >
-          Copy ALL as Text
-        </button>
+    <div className="max-w-6xl mx-auto px-4 py-10">
+      <h1 className="text-2xl font-bold">Results</h1>
+
+      <div className="mt-6 rounded-lg border border-gray-200 bg-white p-4">
+        <h2 className="text-lg font-semibold text-gray-900">Job Summary</h2>
+        <p className="mt-2 text-sm text-gray-700 whitespace-pre-wrap">
+          {[
+            data.jd.role || "",
+            data.jd.description || "",
+            (data.jd.requiredSkills || []).join(", "),
+          ]
+            .filter(Boolean)
+            .join(" • ")}
+        </p>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2">
-        {localResult.candidates.map((c) => (
-          <div key={c.id} className="rounded-xl border p-4">
-            <div className="flex items-start justify-between">
-              <div>
-                <h2 className="text-lg font-semibold">{c.name || "—"}</h2>
-                <p className="text-sm text-gray-600">{c.title || "—"}</p>
-              </div>
-              <span className="text-sm rounded-full px-2 py-1 bg-pink-50 text-pink-700">
-                {Math.round(c.matchScore)}% match
-              </span>
-            </div>
-
-            <div className="mt-3 flex gap-8 text-sm text-gray-700">
-              <div>
-                <div className="text-gray-500">Experience</div>
-                <div>{c.yearsExperience ?? 0} years</div>
-              </div>
-              <div>
-                <div className="text-gray-500">Skills & Evidence</div>
-                <div>{Math.round(c.skillsEvidencePct)}%</div>
-              </div>
-              <div>
-                <div className="text-gray-500">Education</div>
-                <div>{c.education || "—"}</div>
-              </div>
-            </div>
-
-            <div className="mt-4">
-              <button
-                onClick={async () => {
-                  const text = c.formatted || "";
-                  if (!text) return;
-                  try {
-                    await navigator.clipboard.writeText(text);
-                    alert("Candidate details copied.");
-                  } catch {
-                    const ta = document.createElement("textarea");
-                    ta.value = text;
-                    document.body.appendChild(ta);
-                    ta.select();
-                    document.execCommand("copy");
-                    ta.remove();
-                    alert("Candidate details copied.");
-                  }
-                }}
-                className="px-3 py-1.5 rounded-lg border hover:bg-gray-50 text-sm"
-              >
-                Copy details as Text
-              </button>
-            </div>
-          </div>
+      <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
+        {data.candidates.map((c) => (
+          <CandidateCard key={c.id} candidate={c} />
         ))}
       </div>
-    </main>
+    </div>
   );
 }
