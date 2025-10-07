@@ -11,7 +11,7 @@ import {
 } from "@/utils/geminiClient.server";
 
 /** ──────────────────────────────────────────────────────────────
- *  Tiny helpers (no extra packages)
+ *  Zero-dep helpers
  *  ────────────────────────────────────────────────────────────── */
 
 function htmlToText(html: string): string {
@@ -24,11 +24,8 @@ function htmlToText(html: string): string {
   s = s.replace(/<\/(h[1-6]|li|tr)>/gi, "\n");
   s = s.replace(/<[^>]+>/g, " ");
   s = s.replace(/&nbsp;/g, " ");
-  s = s.replace(/&amp;/g, "&");
-  s = s.replace(/&lt;/g, "<");
-  s = s.replace(/&gt;/g, ">");
-  s = s.replace(/&quot;/g, '"');
-  s = s.replace(/&#39;/g, "'");
+  s = s.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">");
+  s = s.replace(/&quot;/g, '"').replace(/&#39;/g, "'");
   return s.replace(/\s+/g, " ").trim();
 }
 
@@ -51,14 +48,12 @@ async function extractTextFromPdf(u8: Uint8Array): Promise<string> {
       return (res?.text || "").trim();
     }
   } catch {
-    /* ignore, use fallback */
+    /* fallback below */
   }
   return bytesToText(u8);
 }
 
-/** No dependency DOCX fallback.
- *  For perfect results, install a DOCX parser later; this keeps deploys clean.
- */
+// Lightweight DOCX fallback (keeps build clean)
 async function extractTextFromDocx(u8: Uint8Array): Promise<string> {
   return bytesToText(u8);
 }
@@ -83,6 +78,8 @@ async function fileToText(f: File): Promise<string> {
   return guess;
 }
 
+/** ───────────────── Candidate scaffolding ───────────────── */
+
 function baseCandidate(id: string): Candidate {
   return {
     id,
@@ -104,10 +101,38 @@ function baseCandidate(id: string): Candidate {
     mentoringNeeds: [],
     educationSummary: "",
     questions: [],
+    formatted: "",            // <-- required by your Candidate type
   };
 }
 
+function formatCandidate(c: Candidate): string {
+  const lines: string[] = [];
+  const head = [c.name, c.title].filter(Boolean).join(" — ");
+  if (head) lines.push(head);
+  const contact = [c.email, c.phone, c.location].filter(Boolean).join(" • ");
+  if (contact) lines.push(contact);
+  lines.push(
+    `Overall Match: ${c.matchScore}% | Skills & Evidence: ${c.skillsEvidencePct}% | Experience: ${c.yearsExperience} ${c.yearsExperience === 1 ? "year" : "years"}`
+  );
+  if (c.education) lines.push(`Education: ${c.education}`);
+  if (c.summary) lines.push(`\nSummary:\n${c.summary}`);
+
+  const sec = (label: string, arr: string[]) => {
+    if (arr && arr.length) lines.push(`\n${label}:\n• ${arr.join("\n• ")}`);
+  };
+  sec("Skills", c.skills);
+  sec("Strengths", c.strengths);
+  sec("Areas for Improvement", c.weaknesses);
+  sec("Identified Gaps", c.gaps);
+  sec("Mentoring Needs", c.mentoringNeeds);
+  sec("AI Interview Questions", c.questions);
+
+  return lines.join("\n");
+}
+
 export const runtime = "nodejs";
+
+/** ─────────────────────────── Route ─────────────────────────── */
 
 export async function POST(req: Request) {
   try {
@@ -142,6 +167,7 @@ export async function POST(req: Request) {
 
       const c = baseCandidate(id);
 
+      // LLM profile extraction
       const profile = text ? await llmExtractProfile(text) : {};
       c.name = profile.name || c.name;
       c.email = profile.email || c.email;
@@ -166,12 +192,14 @@ export async function POST(req: Request) {
         new Set(skillSets.map((s: any) => String(s || "").trim()).filter(Boolean))
       );
 
+      // Heuristic + domain similarity
       const h = scoreHeuristically(text, jdKeywords);
       c.skillsEvidencePct = Math.round(h.coverage * 100);
 
       const sim = domainSimilarity(jd, text);
       c.domainMismatch = sim < 0.12;
 
+      // LLM grading
       const grade = await llmGradeCandidate(jd, text);
       c.matchScore = Math.round(
         clamp01(0.65 * h.coverage + 0.35 * clamp01((grade.score || 0) / 100)) * 100
@@ -184,6 +212,9 @@ export async function POST(req: Request) {
       const missing = Array.isArray(grade.missingSkills) ? grade.missingSkills : [];
       c.gaps = missing;
       c.mentoringNeeds = (missing || []).slice(0, 3).map((g: string) => `Mentorship in ${g}`);
+
+      // Fill the copy-ready text
+      c.formatted = formatCandidate(c);
 
       outCandidates.push(c);
     }
