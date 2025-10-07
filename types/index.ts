@@ -1,37 +1,38 @@
-// types/index.ts
+export type JobRequirements = {
+  role?: string;
+  title?: string;
+  position?: string;
+  description?: string;
+  requiredSkills?: string[];
+  niceToHave?: string[];
+  education?: string;
+  domain?: string;
+};
 
-export interface JobRequirements {
-  title: string;
-  description: string;
-  minYearsExperience?: number;
-  educationLevel?: string; // "Bachelor" | "Master" | "PhD" | etc.
-}
-
-export interface UploadedFile {
+export type UploadedFile = {
   id: string;
   name: string;
-  type: string;
   size: number;
-  file?: File; // Prefer real File for FormData
-  content?: string | ArrayBuffer | Uint8Array; // optional legacy
-}
+  type: string;
+  file: File; // keep native file to send as-is
+};
 
-export interface Candidate {
+export type Candidate = {
   id: string;
-
   name: string;
   email: string;
   phone: string;
   location: string;
   title: string;
-
   yearsExperience: number;
   education: string;
   skills: string[];
   summary: string;
 
-  matchScore: number;        // 0..100
-  skillsEvidencePct: number; // 0..100
+  matchScore: number;
+  skillsEvidencePct: number;
+  yearsScore: number;
+  eduScore: number;
   domainMismatch: boolean;
 
   strengths: string[];
@@ -39,11 +40,15 @@ export interface Candidate {
   gaps: string[];
   mentoringNeeds: string[];
 
-  questions: string[];
-  educationSummary: string;
-  formatted: string;
-}
+  matchedSkills?: string[];
+  missingSkills?: string[];
+  questions?: string[];
+  educationSummary?: string;
 
-export interface AnalysisResult {
+  formatted?: string;
+};
+
+export type AnalysisResult = {
   candidates: Candidate[];
-}
+  jdText?: string; // helpful for debugging; optional so type never breaks
+};
