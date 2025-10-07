@@ -1,208 +1,119 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { Clipboard, X } from "lucide-react";
+import { useState } from "react";
 import type { Candidate } from "@/types";
+import { Clipboard, ClipboardCheck } from "lucide-react";
 
-type Props = {
-  candidate: Candidate | null;
-  /** Optional: if provided and false, the component renders null (for modal usage) */
-  isOpen?: boolean;
-  /** Optional close handler (for modal usage). Safe to omit. */
-  onClose?: () => void;
-};
+type Props = { candidate: Candidate | null; onClose?: () => void };
 
-export default function CandidateDetail({ candidate, isOpen = true, onClose }: Props) {
-  // if being used as a modal: allow the parent to control visibility
-  if (!isOpen) return null;
-
+export default function CandidateDetail({ candidate }: Props) {
   const [copied, setCopied] = useState(false);
+  if (!candidate) return null;
 
-  const formattedText = useMemo(() => {
-    if (!candidate) return "";
-    // Build an easy-to-copy text block. All fields are optional-safe.
-    const lines: string[] = [];
-    lines.push(`## Candidate Details — ${candidate.name || "Not specified"}`);
-    lines.push("");
-    lines.push("**Personal Information**");
-    lines.push(`* Email: ${candidate.email || "Not specified"}`);
-    lines.push(`* Phone: ${candidate.phone || "Not specified"}`);
-    lines.push(`* Location: ${candidate.location || "Not specified"}`);
-    lines.push("");
-    lines.push("**Professional Summary**");
-    lines.push(candidate.summary || "—");
-    lines.push("");
-    lines.push("**Match Breakdown**");
-    lines.push(`* Overall Match: ${candidate.matchScore ?? 0}%`);
-    lines.push(
-      `* Experience: ${Number.isFinite(candidate.yearsExperience) ? candidate.yearsExperience : 0} ${
-        (candidate.yearsExperience ?? 0) === 1 ? "year" : "years"
-      }`
-    );
-    lines.push(`* Skills & Evidence: ${candidate.skillsEvidencePct ?? 0}%`);
-    lines.push(`* Education: ${candidate.education || "—"}`);
-    lines.push("");
-    lines.push("**Skills**");
-    lines.push((candidate.skills || []).join(", ") || "—");
-    lines.push("");
-    if (!candidate.domainMismatch && (candidate.questions?.length ?? 0) > 0) {
-      lines.push("**AI Interview Questions**");
-      (candidate.questions || []).forEach((q, i) => lines.push(`${i + 1}. ${q}`));
-      lines.push("");
-    }
-    lines.push("**Strengths**");
-    lines.push((candidate.strengths || []).map((s) => `* ${s}`).join("\n") || "—");
-    lines.push("");
-    lines.push("**Areas for Improvement**");
-    lines.push((candidate.weaknesses || []).map((w) => `* ${w}`).join("\n") || "—");
-    lines.push("");
-    lines.push("**Identified Gaps**");
-    lines.push((candidate.gaps || []).map((g) => `* ${g}`).join("\n") || "—");
-    lines.push("");
-    lines.push("**Mentoring Needs**");
-    lines.push((candidate.mentoringNeeds || []).map((m) => `* ${m}`).join("\n") || "—");
-    return lines.join("\n");
-  }, [candidate]);
-
-  async function copyFormatted() {
+  const copy = async () => {
     try {
-      const text = formattedText || candidate?.formatted || "";
-      if (!text) return;
-      await navigator.clipboard.writeText(text);
+      await navigator.clipboard.writeText(candidate.formatted || "");
       setCopied(true);
       setTimeout(() => setCopied(false), 1200);
-    } catch {
-      /* noop */
-    }
-  }
+    } catch {}
+  };
 
-  // Render nothing if no candidate (avoids null access issues)
-  if (!candidate) {
-    return (
-      <div className="rounded-2xl border p-6 bg-white shadow-sm">
-        <div className="text-gray-500">No candidate selected.</div>
-      </div>
+  const dash = "—";
+  const showList = (items: string[]) =>
+    items && items.length ? (
+      <ul className="mt-2 grid grid-cols-1 md:grid-cols-2 gap-1">
+        {items.slice(0, 12).map((x, i) => (
+          <li key={i} className="text-sm text-gray-700">• {x}</li>
+        ))}
+      </ul>
+    ) : (
+      <div className="text-sm text-gray-400">{dash}</div>
     );
-  }
 
   return (
-    <div className="relative rounded-2xl border p-6 bg-white shadow-sm">
-      {/* Optional close button for modal usage */}
-      {onClose && (
-        <button
-          onClick={onClose}
-          className="absolute right-3 top-3 p-2 rounded-lg hover:bg-gray-100"
-          aria-label="Close"
-        >
-          <X className="h-5 w-5 text-gray-500" />
-        </button>
-      )}
-
-      <div className="flex items-start justify-between gap-3">
+    <div className="mx-auto max-w-6xl px-4 py-6">
+      <div className="flex justify-between items-start mb-4">
         <h2 className="text-xl font-semibold">Candidate Details</h2>
-
         <button
-          onClick={copyFormatted}
-          className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700"
+          onClick={copy}
+          className="inline-flex items-center gap-2 rounded-md bg-indigo-600 text-white px-3 py-1.5 text-sm"
         >
-          <Clipboard className="h-4 w-4" />
-          {copied ? "Copied!" : "Copy as Text"}
+          {copied ? <ClipboardCheck size={16} /> : <Clipboard size={16} />}
+          Copy as Text
         </button>
       </div>
 
-      {/* Personal info + Summary */}
-      <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-6">
+      {/* top blocks */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
         <div>
-          <h3 className="text-sm font-semibold text-gray-700 mb-2">Personal Information</h3>
-          <ul className="text-sm text-gray-700 space-y-1">
-            <li>Email: {candidate.email || "Not specified"}</li>
-            <li>Phone: {candidate.phone || "Not specified"}</li>
-            <li>Location: {candidate.location || "Not specified"}</li>
-          </ul>
+          <div className="text-xs uppercase text-gray-500">Overall Match</div>
+          <div className="text-2xl font-semibold">{candidate.matchScore}%</div>
         </div>
-
         <div>
-          <h3 className="text-sm font-semibold text-gray-700 mb-2">Professional Summary</h3>
-          <p className="text-sm text-gray-700 whitespace-pre-wrap">
-            {candidate.summary || "—"}
-          </p>
-        </div>
-      </div>
-
-      {/* Match breakdown */}
-      <div className="mt-6 grid grid-cols-1 md:grid-cols-4 gap-4">
-        <StatCard label="Overall Match" value={`${candidate.matchScore ?? 0}%`} />
-        <StatCard
-          label="Experience"
-          value={`${Number.isFinite(candidate.yearsExperience) ? candidate.yearsExperience : 0} ${
-            (candidate.yearsExperience ?? 0) === 1 ? "year" : "years"
-          }`}
-        />
-        <StatCard label="Skills & Evidence" value={`${candidate.skillsEvidencePct ?? 0}%`} />
-        <StatCard label="Education" value={candidate.education || "—"} />
-      </div>
-
-      {/* Skills */}
-      <div className="mt-6">
-        <h3 className="text-sm font-semibold text-gray-700 mb-2">Skills</h3>
-        {candidate.skills?.length ? (
-          <div className="flex flex-wrap gap-2">
-            {candidate.skills.map((s, i) => (
-              <span key={i} className="px-2 py-1 rounded-full bg-indigo-50 text-indigo-700 text-xs border border-indigo-200">
-                {s}
-              </span>
-            ))}
+          <div className="text-xs uppercase text-gray-500">Experience</div>
+          <div className="text-2xl font-semibold">
+            {candidate.yearsExperience || 0} {candidate.yearsExperience === 1 ? "year" : "years"}
           </div>
-        ) : (
-          <div className="text-sm text-gray-500">—</div>
-        )}
-      </div>
-
-      {/* AI Interview Questions (only if domain matches and list exists) */}
-      {!candidate.domainMismatch && (candidate.questions?.length ?? 0) > 0 && (
-        <div className="mt-6">
-          <h3 className="text-sm font-semibold text-gray-700 mb-2">AI Interview Questions</h3>
-          <ul className="list-disc pl-5 text-sm text-gray-700 space-y-1">
-            {(candidate.questions || []).map((q, i) => (
-              <li key={i}>{q}</li>
-            ))}
-          </ul>
         </div>
-      )}
-
-      {/* Strengths / Improvements / Gaps / Mentoring */}
-      <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-6">
-        <ListBlock title="Strengths" items={candidate.strengths || []} />
-        <ListBlock title="Areas for Improvement" items={candidate.weaknesses || []} />
-        <ListBlock title="Identified Gaps" items={candidate.gaps || []} />
-        <ListBlock title="Mentoring Needs" items={candidate.mentoringNeeds || []} />
+        <div>
+          <div className="text-xs uppercase text-gray-500">Skills &amp; Evidence</div>
+          <div className="text-2xl font-semibold">{candidate.skillsEvidencePct}%</div>
+        </div>
       </div>
-    </div>
-  );
-}
 
-function StatCard({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-xl border p-4 bg-gray-50">
-      <div className="text-xs text-gray-500">{label}</div>
-      <div className="text-lg font-semibold text-gray-800">{value}</div>
-    </div>
-  );
-}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+        <section>
+          <h3 className="text-sm font-semibold text-gray-700 mb-1">Personal Information</h3>
+          <div className="text-sm text-gray-800">
+            <div>Email: {candidate.email || dash}</div>
+            <div>Phone: {candidate.phone || dash}</div>
+            <div>Location: {candidate.location || dash}</div>
+          </div>
 
-function ListBlock({ title, items }: { title: string; items: string[] }) {
-  return (
-    <div>
-      <h3 className="text-sm font-semibold text-gray-700 mb-2">{title}</h3>
-      {items.length ? (
-        <ul className="list-disc pl-5 text-sm text-gray-700 space-y-1">
-          {items.map((s, i) => (
-            <li key={i}>{s}</li>
-          ))}
-        </ul>
-      ) : (
-        <div className="text-sm text-gray-500">—</div>
-      )}
+          <h3 className="text-sm font-semibold text-gray-700 mt-4 mb-1">Skills</h3>
+          {showList(candidate.skills || [])}
+
+          <h3 className="text-sm font-semibold text-gray-700 mt-4 mb-1">Identified Gaps</h3>
+          {showList(candidate.gaps || [])}
+        </section>
+
+        <section className="md:col-span-2">
+          <h3 className="text-sm font-semibold text-gray-700 mb-1">Professional Summary</h3>
+          <p className="text-sm text-gray-800 whitespace-pre-wrap">
+            {candidate.summary || dash}
+          </p>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mt-4">
+            <div>
+              <h3 className="text-sm font-semibold text-gray-700 mb-1">Strengths</h3>
+              {showList(candidate.strengths || [])}
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold text-gray-700 mb-1">Areas for Improvement</h3>
+              {showList(candidate.weaknesses || [])}
+            </div>
+          </div>
+
+          {!candidate.domainMismatch && candidate.questions && candidate.questions.length > 0 && (
+            <div className="mt-5">
+              <h3 className="text-sm font-semibold text-gray-700 mb-1">AI Interview Questions</h3>
+              {showList(candidate.questions)}
+            </div>
+          )}
+
+          <div className="mt-5">
+            <h3 className="text-sm font-semibold text-gray-700 mb-1">Mentoring Needs</h3>
+            {showList(candidate.mentoringNeeds || [])}
+          </div>
+
+          <div className="mt-5">
+            <h3 className="text-sm font-semibold text-gray-700 mb-1">Education</h3>
+            <div className="text-sm text-gray-800">
+              {candidate.education || candidate.educationSummary || dash}
+            </div>
+          </div>
+        </section>
+      </div>
     </div>
   );
 }
