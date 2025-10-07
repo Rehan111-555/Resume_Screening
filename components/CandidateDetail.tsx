@@ -1,199 +1,154 @@
+// components/CandidateDetail.tsx
 "use client";
 
-import * as React from "react";
+import { useMemo, useState } from "react";
 import type { Candidate } from "@/types";
 
 type Props = {
   candidate: Candidate | null;
-  /** Optional props if you show this in a modal */
   isOpen?: boolean;
   onClose?: () => void;
 };
 
-export default function CandidateDetail({ candidate, isOpen, onClose }: Props) {
-  // If you use modal controls, respect them
-  if (isOpen === false) return null;
-  if (!candidate) return null;
+export default function CandidateDetail({ candidate, isOpen = true, onClose }: Props) {
+  const [copied, setCopied] = useState(false);
 
-  const {
-    name,
-    email,
-    phone,
-    location,
-    summary,
-    matchScore,
-    yearsExperience,
-    skillsEvidencePct,
-    education,
-    skills = [],
-    strengths = [],
-    weaknesses = [],
-    gaps = [],
-    mentoringNeeds = [],
-    questions = [],
-    domainMismatch,
-  } = candidate;
+  // if no candidate or we don’t need modal open, render nothing
+  if (!isOpen || !candidate) return null;
 
   async function handleCopy() {
     try {
-      // ✅ Guard inside the function (narrowing doesn't flow from the outer return)
-      const text = candidate?.formatted ?? "";
+      const text = candidate.formatted || "";
       if (!text) return;
       await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1400);
     } catch {
-      // ignore
+      /* noop */
     }
   }
 
+  const qCount = candidate.questions?.length ?? 0;
+
   return (
-    <div className="relative">
-      {onClose && (
-        <button
-          onClick={onClose}
-          className="absolute right-0 -top-10 rounded-md border px-3 py-1 text-sm hover:bg-gray-50"
-          aria-label="Close"
-        >
-          ✕ Close
-        </button>
-      )}
-
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-xl font-semibold">Candidate Details</h2>
-        <button
-          onClick={handleCopy}
-          className="rounded-md bg-indigo-600 px-3 py-1.5 text-white text-sm hover:bg-indigo-700"
-        >
-          Copy as Text
-        </button>
-      </div>
-
-      {/* Personal Information / Summary */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <section>
-          <h3 className="font-medium text-gray-900 mb-2">Personal Information</h3>
-          <p className="text-sm text-gray-600">Email: {email || "Not specified"}</p>
-          <p className="text-sm text-gray-600">Phone: {phone || "Not specified"}</p>
-          <p className="text-sm text-gray-600">Location: {location || "Not specified"}</p>
-        </section>
-
-        <section>
-          <h3 className="font-medium text-gray-900 mb-2">Professional Summary</h3>
-          <p className="text-sm text-gray-700 whitespace-pre-line">{summary || "—"}</p>
-        </section>
-      </div>
-
-      {/* Match Breakdown */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6">
-        <div className="rounded-lg border p-4">
-          <div className="text-xs text-gray-500">Overall Match</div>
-          <div className="text-2xl font-semibold">{matchScore ?? 0}%</div>
-        </div>
-        <div className="rounded-lg border p-4">
-          <div className="text-xs text-gray-500">Experience</div>
-          <div className="text-2xl font-semibold">
-            {typeof yearsExperience === "number" ? `${yearsExperience} years` : "—"}
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-start justify-center p-4">
+      <div className="w-full max-w-4xl bg-white rounded-2xl shadow-xl p-6 overflow-y-auto max-h-[90vh]">
+        <div className="flex items-center justify-between">
+          <h2 className="text-xl font-semibold">Candidate Details</h2>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleCopy}
+              className="px-3 py-1.5 rounded-md bg-slate-100 hover:bg-slate-200 text-sm"
+            >
+              {copied ? "Copied!" : "Copy as Text"}
+            </button>
+            <button
+              onClick={onClose}
+              className="px-3 py-1.5 rounded-md bg-slate-100 hover:bg-slate-200 text-sm"
+            >
+              Close
+            </button>
           </div>
         </div>
-        <div className="rounded-lg border p-4">
-          <div className="text-xs text-gray-500">Skills & Evidence</div>
-          <div className="text-2xl font-semibold">{skillsEvidencePct ?? 0}%</div>
-        </div>
-      </div>
 
-      {/* Education */}
-      <div className="rounded-lg border p-4 mt-4">
-        <div className="text-xs text-gray-500">Education</div>
-        <div className="text-base font-medium">{education || "—"}</div>
-      </div>
-
-      {/* Skills */}
-      <section className="mt-6">
-        <h3 className="font-medium text-gray-900 mb-2">Skills</h3>
-        {skills.length ? (
-          <div className="flex flex-wrap gap-2">
-            {skills.map((s, i) => (
-              <span
-                key={`${s}-${i}`}
-                className="rounded-full bg-gray-100 px-2.5 py-1 text-xs text-gray-800"
-              >
-                {s}
-              </span>
-            ))}
+        {/* Top summary row */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mt-4">
+          <div className="col-span-1">
+            <div className="text-sm text-gray-500">Personal Information</div>
+            <div className="text-sm mt-2">Email: {candidate.email || "Not specified"}</div>
+            <div className="text-sm">Phone: {candidate.phone || "Not specified"}</div>
+            <div className="text-sm">Location: {candidate.location || "Not specified"}</div>
           </div>
-        ) : (
-          <p className="text-sm text-gray-600">—</p>
-        )}
-      </section>
 
-      {/* Strengths / Areas for Improvement */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
-        <section>
-          <h3 className="font-medium text-green-700 mb-2">Strengths</h3>
-          {strengths.length ? (
-            <ul className="list-disc pl-5 space-y-1 text-sm text-gray-800">
-              {strengths.map((x, i) => (
-                <li key={`str-${i}`}>{x}</li>
-              ))}
-            </ul>
-          ) : (
-            <p className="text-sm text-gray-600">—</p>
-          )}
-        </section>
+          <div className="col-span-3">
+            <div className="text-sm text-gray-500">Professional Summary</div>
+            <p className="text-sm mt-2 whitespace-pre-wrap">{candidate.summary || "—"}</p>
+          </div>
+        </div>
 
-        <section>
-          <h3 className="font-medium text-rose-700 mb-2">Areas for Improvement</h3>
-          {weaknesses.length ? (
-            <ul className="list-disc pl-5 space-y-1 text-sm text-gray-800">
-              {weaknesses.map((x, i) => (
-                <li key={`weak-${i}`}>{x}</li>
-              ))}
-            </ul>
-          ) : (
-            <p className="text-sm text-gray-600">—</p>
-          )}
-        </section>
-      </div>
+        {/* Metrics */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mt-6">
+          <Metric title="Overall Match" value={`${candidate.matchScore}%`} />
+          <Metric title="Experience" value={`${candidate.yearsExperience} years`} />
+          <Metric title="Skills & Evidence" value={`${candidate.skillsEvidencePct}%`} />
+          <Metric title="Education" value={candidate.education || "—"} />
+        </div>
 
-      {/* Identified Gaps / Mentoring Needs */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
-        <section>
-          <h3 className="font-medium text-amber-700 mb-2">Identified Gaps</h3>
-          {gaps.length ? (
-            <ul className="list-disc pl-5 space-y-1 text-sm text-gray-800">
-              {gaps.map((x, i) => (
-                <li key={`gap-${i}`}>{x}</li>
-              ))}
-            </ul>
-          ) : (
-            <p className="text-sm text-gray-600">—</p>
-          )}
-        </section>
-
-        <section>
-          <h3 className="font-medium text-purple-700 mb-2">Mentoring Needs</h3>
-          {mentoringNeeds.length ? (
-            <ul className="list-disc pl-5 space-y-1 text-sm text-gray-800">
-              {mentoringNeeds.map((x, i) => (
-                <li key={`need-${i}`}>{x}</li>
-              ))}
-            </ul>
-          ) : (
-            <p className="text-sm text-gray-600">—</p>
-          )}
-        </section>
-      </div>
-
-      {/* AI Interview Questions (only when domain matches) */}
-      {!domainMismatch && questions.length > 0 ? (
+        {/* Skills */}
         <section className="mt-6">
-          <h3 className="font-medium text-gray-900 mb-2">AI Interview Questions</h3>
-          <ol className="list-decimal pl-5 space-y-1 text-sm text-gray-800">
-            {questions.map((q, i) => (
-              <li key={`q-${i}`}>{q}</li>
-            ))}
-          </ol>
+          <h3 className="text-sm font-semibold text-gray-700 mb-2">Skills</h3>
+          {candidate.skills?.length ? (
+            <div className="flex flex-wrap gap-2">
+              {candidate.skills.map((s, i) => (
+                <span
+                  key={`${s}-${i}`}
+                  className="px-2 py-1 text-xs rounded-full bg-slate-100 border border-slate-200"
+                >
+                  {s}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <div className="text-sm text-gray-400">—</div>
+          )}
         </section>
-      ) : null}
+
+        {/* Strengths / Improvements / Gaps / Mentoring */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
+          <ListBlock title="Strengths" items={candidate.strengths} color="text-emerald-600" />
+          <ListBlock title="Areas for Improvement" items={candidate.weaknesses} color="text-rose-600" />
+          <ListBlock title="Identified Gaps" items={candidate.gaps} color="text-amber-700" />
+          <ListBlock title="Mentoring Needs" items={candidate.mentoringNeeds} color="text-fuchsia-700" />
+        </div>
+
+        {/* AI Questions – shown only when domain matches */}
+        {!candidate.domainMismatch && qCount > 0 && (
+          <section className="mt-6">
+            <h3 className="text-sm font-semibold text-gray-700 mb-2">AI Interview Questions</h3>
+            <ul className="list-disc ml-6 space-y-1">
+              {candidate.questions!.map((q, i) => (
+                <li key={i} className="text-sm">
+                  {q}
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Metric({ title, value }: { title: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-gray-200 p-3">
+      <div className="text-xs text-gray-500">{title}</div>
+      <div className="text-lg font-semibold">{value}</div>
+    </div>
+  );
+}
+
+function ListBlock({
+  title,
+  items,
+  color,
+}: {
+  title: string;
+  items?: string[];
+  color?: string;
+}) {
+  return (
+    <div>
+      <h3 className={`text-sm font-semibold ${color || ""} mb-2`}>{title}</h3>
+      {items?.length ? (
+        <ul className="list-disc ml-6 space-y-1 text-sm">
+          {items.map((s, i) => (
+            <li key={`${s}-${i}`}>{s}</li>
+          ))}
+        </ul>
+      ) : (
+        <div className="text-sm text-gray-400">—</div>
+      )}
     </div>
   );
 }
