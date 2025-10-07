@@ -1,49 +1,57 @@
 "use client";
 
-import type { Candidate } from "@/types";
+import React from "react";
 
-type Props = {
-  candidate: Candidate;
-  onClick?: () => void;
+type Candidate = {
+  id: string;
+  name: string;
+  title: string;
+  yearsExperience: number;
+  education: string;
+  skills: string[];
+  summary: string;
+  matchScore: number;
 };
 
-export default function CandidateCard({ candidate, onClick }: Props) {
+export default function CandidateCard({ candidate }: { candidate: Candidate }) {
   return (
-    <div
-      onClick={onClick}
-      className="rounded-2xl border p-4 hover:shadow cursor-pointer transition"
-    >
-      <div className="flex items-center justify-between">
-        <h3 className="font-semibold truncate">{candidate.name || "—"}</h3>
-        <span className="text-xs rounded-full bg-rose-50 text-rose-600 px-2 py-0.5">
+    <div className="rounded-lg border border-gray-200 bg-white p-4">
+      <div className="flex items-start justify-between">
+        <div>
+          <h3 className="text-base font-semibold text-gray-900">{candidate.name}</h3>
+          <p className="text-sm text-gray-600">{candidate.title}</p>
+        </div>
+        <span className="rounded-full bg-rose-100 px-2 py-1 text-xs font-semibold text-rose-700">
           {candidate.matchScore}% match
         </span>
       </div>
 
-      <p className="mt-1 text-sm text-gray-600 truncate">
-        {candidate.title || "—"}
-      </p>
-
-      <div className="mt-3 grid grid-cols-3 gap-3 text-xs">
+      <div className="mt-3 grid grid-cols-3 gap-2 text-xs text-gray-600">
         <div>
-          <div className="text-gray-400">Skills & Evidence</div>
-          <div className="font-semibold">{candidate.skillsEvidencePct}%</div>
+          <p className="font-medium text-gray-900">Skills & Evidence</p>
+          <p>{candidate.skills.length ? "—" : "—"}</p>
         </div>
         <div>
-          <div className="text-gray-400">Experience</div>
-          <div className="font-semibold">{candidate.yearsExperience} years</div>
+          <p className="font-medium text-gray-900">Experience</p>
+          <p>{candidate.yearsExperience} years</p>
         </div>
         <div>
-          <div className="text-gray-400">Education</div>
-          <div className="font-semibold">{candidate.education || "—"}</div>
+          <p className="font-medium text-gray-900">Education</p>
+          <p>{candidate.education || "—"}</p>
         </div>
       </div>
 
-      {candidate.domainMismatch && (
-        <div className="mt-3 inline-block text-[10px] px-2 py-0.5 rounded-full bg-rose-100 text-rose-700">
-          Domain not matching
-        </div>
-      )}
+      <div className="mt-3">
+        <p className="text-sm text-gray-700 line-clamp-4">{candidate.summary || "—"}</p>
+      </div>
+
+      <div className="mt-2 flex flex-wrap gap-1">
+        {candidate.skills.map((s) => (
+          <span key={s} className="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-700">
+            {s}
+          </span>
+        ))}
+      </div>
     </div>
   );
 }
