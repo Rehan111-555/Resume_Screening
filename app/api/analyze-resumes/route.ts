@@ -20,7 +20,7 @@ import {
   estimateYears,
   domainSimilarity,
   cleanTokens,
-} from "@/lib/geminiClient.server";
+} from "@/utils/geminiClient.server";
 
 // We need Node APIs (File#arrayBuffer etc. are fine in node runtime too)
 export const runtime = "nodejs";
@@ -234,3 +234,4 @@ export async function POST(req: Request) {
     );
   }
 }
+
