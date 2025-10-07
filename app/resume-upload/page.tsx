@@ -4,23 +4,18 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import UploadBox from "@/components/UploadBox";
+import ProgressBar from "@/components/ProgressBar";
 import { useApp } from "@/contexts/AppContext";
-import type { UploadedFile, AnalysisResult } from "@/types";
+import type { AnalysisResult } from "@/types";
 
-function toFile(u: UploadedFile): File {
-  if (u.file instanceof File) return u.file;
-
-  let part: BlobPart;
-  if (u.content instanceof Blob) part = u.content;
-  else if (typeof u.content === "string") part = u.content;
-  else if (u.content instanceof ArrayBuffer) part = new Uint8Array(u.content);
-  else if (u.content instanceof Uint8Array) part = u.content;
-  else part = "";
-
-  const name = u.name || "upload";
-  const type = u.type || "application/octet-stream";
-  return new File([part], name, { type });
-}
+type AnyUploaded = {
+  id?: string;
+  name?: string;
+  type?: string;
+  size?: number;
+  file?: File;        // preferred (what UploadBox should provide)
+  content?: unknown;  // legacy shapes – we won’t rely on this anymore
+};
 
 export default function ResumeUploadPage() {
   const router = useRouter();
@@ -30,8 +25,9 @@ export default function ResumeUploadPage() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
-  const setFiles = (files: UploadedFile[]) => {
-    dispatch({ type: "SET_UPLOADED_FILES", payload: files });
+  const setFiles = (files: AnyUploaded[]) => {
+    // keep whatever UploadBox gives; store in context as-is
+    dispatch({ type: "SET_UPLOADED_FILES", payload: files as any });
   };
 
   async function handleAnalyze() {
@@ -42,7 +38,7 @@ export default function ResumeUploadPage() {
       setError("Please complete Job Requirements first.");
       return;
     }
-    if (!uploadedFiles.length) {
+    if (!uploadedFiles?.length) {
       setError("Please upload at least one resume.");
       return;
     }
@@ -52,16 +48,34 @@ export default function ResumeUploadPage() {
 
       const formData = new FormData();
       formData.append("jobRequirements", JSON.stringify(jobRequirements));
-      for (const f of uploadedFiles) {
-        const file = toFile(f);
-        formData.append("resumes", file, file.name);
+
+      // ✅ Append the actual File objects only (no conversions)
+      for (const u of uploadedFiles as AnyUploaded[]) {
+        const f = (u as AnyUploaded)?.file;
+        if (f instanceof File) {
+          formData.append("resumes", f);
+          continue;
+        }
+        // If UploadBox ever passed a raw File directly:
+        if (u instanceof File) {
+          formData.append("resumes", u);
+          continue;
+        }
+        // Last-resort: skip non-File legacy entries instead of crashing build
+        console.warn("Skipped non-File upload item", u);
       }
 
       const res = await fetch("/api/analyze-resumes", { method: "POST", body: formData });
       const raw = await res.text();
       if (!res.ok) throw new Error(raw.slice(0, 500));
 
-      const data: AnalysisResult = JSON.parse(raw);
+      let data: AnalysisResult;
+      try {
+        data = JSON.parse(raw);
+      } catch {
+        throw new Error(`Expected JSON but got: ${raw.slice(0, 200)}`);
+      }
+
       dispatch({ type: "SET_ANALYSIS_RESULT", payload: data });
       setSuccess(`Analyzed ${data.candidates.length} candidates 🎉`);
       router.push("/results");
@@ -74,16 +88,22 @@ export default function ResumeUploadPage() {
 
   return (
     <main className="max-w-4xl mx-auto px-4 py-8">
-      <h1 className="text-3xl font-extrabold mb-2">Upload Resumes</h1>
-      <p className="text-gray-600 mb-6">Upload PDF or DOCX (up to 100 files). We’ll analyze them against your JD.</p>
+      <ProgressBar currentStep={1} totalSteps={3} labels={["Job Requirements", "Upload Resumes", "Results"]} />
 
-      <UploadBox uploadedFiles={uploadedFiles} onFilesUpload={setFiles} />
+      <h1 className="text-3xl font-extrabold mb-2 bg-gradient-to-r from-cyan-500 via-blue-500 to-indigo-600 bg-clip-text text-transparent">
+        Upload Resumes
+      </h1>
+      <p className="text-gray-600 mb-6">
+        Upload PDF or DOCX (up to 100 files). We’ll strictly analyze them against your JD.
+      </p>
+
+      <UploadBox uploadedFiles={uploadedFiles as any} onFilesUpload={setFiles} />
 
       <div className="mt-6 flex items-center gap-3">
         <button
           onClick={handleAnalyze}
-          disabled={loading || !uploadedFiles.length || !jobRequirements}
-          className="px-5 py-2.5 rounded-xl bg-indigo-600 text-white disabled:opacity-50 shadow hover:opacity-95"
+          disabled={loading || !uploadedFiles?.length || !jobRequirements}
+          className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-indigo-600 to-pink-600 text-white disabled:opacity-50 shadow hover:opacity-95"
         >
           {loading ? "Analyzing…" : "Analyze with AI"}
         </button>
