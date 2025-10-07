@@ -1,7 +1,7 @@
 // components/CandidateDetail.tsx
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import type { Candidate } from "@/types";
 
 type Props = {
@@ -13,22 +13,23 @@ type Props = {
 export default function CandidateDetail({ candidate, isOpen = true, onClose }: Props) {
   const [copied, setCopied] = useState(false);
 
-  // if no candidate or we don’t need modal open, render nothing
+  // Do not render anything if no candidate or closed
   if (!isOpen || !candidate) return null;
 
   async function handleCopy() {
     try {
-      const text = candidate.formatted || "";
+      // <- FIX: optional chaining avoids the "possibly null" error
+      const text = candidate?.formatted ?? "";
       if (!text) return;
       await navigator.clipboard.writeText(text);
       setCopied(true);
       setTimeout(() => setCopied(false), 1400);
     } catch {
-      /* noop */
+      // ignore
     }
   }
 
-  const qCount = candidate.questions?.length ?? 0;
+  const qCount = candidate?.questions?.length ?? 0;
 
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-start justify-center p-4">
@@ -55,29 +56,29 @@ export default function CandidateDetail({ candidate, isOpen = true, onClose }: P
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mt-4">
           <div className="col-span-1">
             <div className="text-sm text-gray-500">Personal Information</div>
-            <div className="text-sm mt-2">Email: {candidate.email || "Not specified"}</div>
-            <div className="text-sm">Phone: {candidate.phone || "Not specified"}</div>
-            <div className="text-sm">Location: {candidate.location || "Not specified"}</div>
+            <div className="text-sm mt-2">Email: {candidate?.email || "Not specified"}</div>
+            <div className="text-sm">Phone: {candidate?.phone || "Not specified"}</div>
+            <div className="text-sm">Location: {candidate?.location || "Not specified"}</div>
           </div>
 
           <div className="col-span-3">
             <div className="text-sm text-gray-500">Professional Summary</div>
-            <p className="text-sm mt-2 whitespace-pre-wrap">{candidate.summary || "—"}</p>
+            <p className="text-sm mt-2 whitespace-pre-wrap">{candidate?.summary || "—"}</p>
           </div>
         </div>
 
         {/* Metrics */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mt-6">
-          <Metric title="Overall Match" value={`${candidate.matchScore}%`} />
-          <Metric title="Experience" value={`${candidate.yearsExperience} years`} />
-          <Metric title="Skills & Evidence" value={`${candidate.skillsEvidencePct}%`} />
-          <Metric title="Education" value={candidate.education || "—"} />
+          <Metric title="Overall Match" value={`${candidate?.matchScore ?? 0}%`} />
+          <Metric title="Experience" value={`${candidate?.yearsExperience ?? 0} years`} />
+          <Metric title="Skills & Evidence" value={`${candidate?.skillsEvidencePct ?? 0}%`} />
+          <Metric title="Education" value={candidate?.education || "—"} />
         </div>
 
         {/* Skills */}
         <section className="mt-6">
           <h3 className="text-sm font-semibold text-gray-700 mb-2">Skills</h3>
-          {candidate.skills?.length ? (
+          {candidate?.skills?.length ? (
             <div className="flex flex-wrap gap-2">
               {candidate.skills.map((s, i) => (
                 <span
@@ -95,18 +96,18 @@ export default function CandidateDetail({ candidate, isOpen = true, onClose }: P
 
         {/* Strengths / Improvements / Gaps / Mentoring */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
-          <ListBlock title="Strengths" items={candidate.strengths} color="text-emerald-600" />
-          <ListBlock title="Areas for Improvement" items={candidate.weaknesses} color="text-rose-600" />
-          <ListBlock title="Identified Gaps" items={candidate.gaps} color="text-amber-700" />
-          <ListBlock title="Mentoring Needs" items={candidate.mentoringNeeds} color="text-fuchsia-700" />
+          <ListBlock title="Strengths" items={candidate?.strengths} color="text-emerald-600" />
+          <ListBlock title="Areas for Improvement" items={candidate?.weaknesses} color="text-rose-600" />
+          <ListBlock title="Identified Gaps" items={candidate?.gaps} color="text-amber-700" />
+          <ListBlock title="Mentoring Needs" items={candidate?.mentoringNeeds} color="text-fuchsia-700" />
         </div>
 
-        {/* AI Questions – shown only when domain matches */}
-        {!candidate.domainMismatch && qCount > 0 && (
+        {/* AI Questions – only when domain matches */}
+        {!candidate?.domainMismatch && qCount > 0 && (
           <section className="mt-6">
             <h3 className="text-sm font-semibold text-gray-700 mb-2">AI Interview Questions</h3>
             <ul className="list-disc ml-6 space-y-1">
-              {candidate.questions!.map((q, i) => (
+              {candidate?.questions!.map((q, i) => (
                 <li key={i} className="text-sm">
                   {q}
                 </li>
