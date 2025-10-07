@@ -1,58 +1,136 @@
-// app/api/analyze-resumes/route.ts
-import { NextRequest, NextResponse } from "next/server";
-import { convert } from "html-to-text";
-import mammoth from "mammoth";
-import pdf from "pdf-parse";
-import type { Candidate, AnalysisResult, JobRequirements } from "@/types";
+import { NextResponse } from "next/server";
+import type { AnalysisResult, Candidate } from "@/types";
 import {
   llmExtractProfile,
+  llmGradeCandidate,
   llmDeriveKeywords,
   scoreHeuristically,
-  estimateYears,
+  domainSimilarity,
   mapEduLevel,
   clamp01,
-  domainSimilarity,
 } from "@/utils/geminiClient.server";
 
-async function fileToText(file: File): Promise<string> {
-  const lower = (file.name || "").toLowerCase();
-  const buf = Buffer.from(await file.arrayBuffer());
+/** ──────────────────────────────────────────────────────────────
+ *  Lightweight helpers (no external packages)
+ *  ────────────────────────────────────────────────────────────── */
 
-  if (lower.endsWith(".pdf") || file.type === "application/pdf") {
-    try {
-      const out = await pdf(buf);
-      return (out.text || "").trim();
-    } catch (e) {
-      return `PARSE_ERROR: pdf ${String(e)}`;
-    }
-  }
-
-  if (lower.endsWith(".docx") || file.type.includes("officedocument.wordprocessingml.document")) {
-    try {
-      const out = await mammoth.extractRawText({ buffer: buf });
-      return (out.value || "").trim();
-    } catch (e) {
-      return `PARSE_ERROR: docx ${String(e)}`;
-    }
-  }
-
-  if (lower.endsWith(".html") || file.type.includes("text/html")) {
-    try {
-      return convert(buf.toString("utf8"), { wordwrap: false }).trim();
-    } catch (e) {
-      return `PARSE_ERROR: html ${String(e)}`;
-    }
-  }
-
-  try {
-    const asText = buf.toString("utf8");
-    return asText.trim();
-  } catch (e) {
-    return `PARSE_ERROR: txt ${String(e)}`;
-  }
+/** minimal html→text (enough for resumes pasted as HTML) */
+function htmlToText(html: string): string {
+  if (!html) return "";
+  let s = html;
+  s = s.replace(/<style[\s\S]*?<\/style>/gi, " ");
+  s = s.replace(/<script[\s\S]*?<\/script>/gi, " ");
+  s = s.replace(/<br\s*\/?>/gi, "\n");
+  s = s.replace(/<\/p>/gi, "\n");
+  s = s.replace(/<\/(h[1-6]|li|tr)>/gi, "\n");
+  s = s.replace(/<[^>]+>/g, " ");
+  // decode a few common entities
+  s = s.replace(/&nbsp;/g, " ");
+  s = s.replace(/&amp;/g, "&");
+  s = s.replace(/&lt;/g, "<");
+  s = s.replace(/&gt;/g, ">");
+  s = s.replace(/&quot;/g, '"');
+  s = s.replace(/&#39;/g, "'");
+  return s.replace(/\s+/g, " ").trim();
 }
 
-function blankCandidate(id: string): Candidate {
+/** robust-ish byte → utf8 text (filters binary) */
+function bytesToText(buf: ArrayBuffer | Uint8Array): string {
+  const u8 = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+  const dec = new TextDecoder("utf-8", { fatal: false, ignoreBOM: true });
+  let txt = dec.decode(u8);
+  // strip obvious binary noise
+  txt = txt.replace(/[^\x09\x0A\x0D\x20-\x7E\u00A0-\uFFFF]/g, " ");
+  return txt.replace(/\s+/g, " ").trim();
+}
+
+/** Try to read PDF text.
+ *  - If `pdf-parse` is available in your project, we use it.
+ *  - Otherwise we fall back to a best-effort decode (works on some text PDFs).
+ */
+async function extractTextFromPdf(u8: Uint8Array): Promise<string> {
+  try {
+    // Optional dependency. If you installed "pdf-parse", this path will work.
+    const mod = await import("pdf-parse").catch(() => null as any);
+    if (mod) {
+      const pdfParse = (mod.default ?? mod) as (d: Buffer | Uint8Array) => Promise<{ text: string }>;
+      const res = await pdfParse(u8);
+      return (res?.text || "").trim();
+    }
+  } catch {
+    /* fall through */
+  }
+  // Fallback: decode the bytes (works only for simple, text-based PDFs)
+  return bytesToText(u8);
+}
+
+/** Very small DOCX text extractor (unzips XML only if global crypto.subtle exists).
+ *  If unzip is unavailable, we fall back to best-effort bytes → text.
+ */
+async function extractTextFromDocx(u8: Uint8Array): Promise<string> {
+  // avoid new deps; try Web Streams unzip if available (Edge runtimes)
+  try {
+    // Lazy import tiny unzipper that uses Web APIs (no node deps)
+    const { unzip } = await import("@zip.js/zip.js").catch(() => ({ unzip: null as any }));
+    if (unzip) {
+      const reader = new (global as any).Blob([u8]).stream();
+      const entries = await unzip(reader);
+      let xml = "";
+      for await (const entry of entries) {
+        if (entry?.filename?.endsWith("word/document.xml")) {
+          const chunks: Uint8Array[] = [];
+          for await (const chunk of entry.stream()) chunks.push(chunk);
+          const full = new Uint8Array(chunks.reduce((a, c) => a + c.length, 0));
+          let off = 0;
+          for (const c of chunks) {
+            full.set(c, off);
+            off += c.length;
+          }
+          xml = new TextDecoder().decode(full);
+          break;
+        }
+      }
+      if (xml) {
+        const text = xml
+          .replace(/<w:p[^>]*>/g, "\n")
+          .replace(/<[^>]+>/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+        return text;
+      }
+    }
+  } catch {
+    /* ignore and fallback */
+  }
+  return bytesToText(u8);
+}
+
+/** Detect extension quickly */
+function extOf(name = ""): string {
+  const m = /\.([a-z0-9]+)$/i.exec(name);
+  return m ? m[1].toLowerCase() : "";
+}
+
+/** Convert uploaded File -> plain text (no extra deps required) */
+async function fileToText(f: File): Promise<string> {
+  const buf = new Uint8Array(await f.arrayBuffer());
+  const mime = (f.type || "").toLowerCase();
+  const ext = extOf(f.name);
+
+  if (mime.includes("pdf") || ext === "pdf") {
+    return await extractTextFromPdf(buf);
+  }
+  if (ext === "docx" || mime.includes("officedocument")) {
+    return await extractTextFromDocx(buf);
+  }
+  if (mime.includes("html") || ext === "html" || /<\/?[a-z][\s\S]*>/i.test(bytesToText(buf))) {
+    return htmlToText(bytesToText(buf));
+  }
+  return bytesToText(buf);
+}
+
+/** Build the Candidate skeleton with defaults */
+function baseCandidate(id: string): Candidate {
   return {
     id,
     name: "",
@@ -71,105 +149,114 @@ function blankCandidate(id: string): Candidate {
     weaknesses: [],
     gaps: [],
     mentoringNeeds: [],
-    questions: [],
     educationSummary: "",
-    formatted: "",
+    // the UI won’t crash if these are absent, but many designs expect them
+    questions: [],
   };
 }
 
-export async function POST(req: NextRequest) {
+/** ──────────────────────────────────────────────────────────────
+ *  API Route
+ *  ────────────────────────────────────────────────────────────── */
+export const runtime = "nodejs"; // ensure we run on the server
+
+export async function POST(req: Request) {
   try {
     const form = await req.formData();
 
-    const jdRaw = form.get("jobRequirements") as string | null;
-    if (!jdRaw) return NextResponse.json({ error: "Missing jobRequirements" }, { status: 400 });
+    const rawJD = form.get("jobRequirements");
+    const jd = typeof rawJD === "string" ? rawJD : JSON.stringify(rawJD || "");
+    const jdKeywords = await llmDeriveKeywords(jd);
 
-    const jd: JobRequirements = JSON.parse(jdRaw);
-    const files = form.getAll("resumes").filter(Boolean) as File[];
-    if (files.length === 0) return NextResponse.json({ error: "No resumes uploaded" }, { status: 400 });
-
-    const jdText = `${jd.title || ""}\n${jd.description || ""}`;
-    const jdKeywords = await llmDeriveKeywords(jdText);
-
-    const rawTexts = await Promise.all(files.map(fileToText));
-    const candidates: Candidate[] = [];
-
-    for (let i = 0; i < files.length; i++) {
-      const id = `${i}-${files[i].name}`;
-      const base = blankCandidate(id);
-      const text = rawTexts[i] || "";
-
-      if (!text || /^PARSE_ERROR:/i.test(text)) {
-        base.summary = text || "PARSE_ERROR: empty";
-        base.domainMismatch = true;
-        base.skillsEvidencePct = 0;
-        base.matchScore = 0;
-        base.formatted = `Resume: ${files[i].name}\n\n${text}`;
-        candidates.push(base);
-        continue;
-      }
-
-      // Heuristic: JD coverage
-      const heur = scoreHeuristically(text, jdKeywords);
-      base.skillsEvidencePct = Math.round(heur.coverage * 100);
-
-      // Domain similarity (semi-agnostic)
-      const sim = domainSimilarity(jdText, text); // 0..1
-      const domainMismatch = sim < 0.12 && heur.coverage < 0.22;
-      base.domainMismatch = domainMismatch;
-
-      // Basic signals
-      const years = estimateYears(text);
-      base.yearsExperience = years;
-      base.education = mapEduLevel(text);
-
-      // Extract details
-      const profile = await llmExtractProfile(text);
-
-      base.name = profile.name || base.name;
-      base.email = profile.email || "";
-      base.phone = profile.phone || "";
-      base.location = profile.location || "";
-      base.title = profile.headline || profile.title || "";
-      base.summary = profile.summary || "";
-      base.skills = Array.isArray(profile.skills) ? profile.skills : [];
-      base.strengths = Array.isArray(profile.strengths) ? profile.strengths : [];
-      base.weaknesses = Array.isArray(profile.weaknesses) ? profile.weaknesses : [];
-      base.gaps = Array.isArray(profile.missingSkills) ? profile.missingSkills : [];
-      base.questions = Array.isArray(profile.questions) ? profile.questions.slice(0, 8) : [];
-
-      base.educationSummary = Array.isArray(profile.education)
-        ? profile.education.map((e: any) => e.degree || e.institution).filter(Boolean).join(" · ")
-        : "";
-
-      // Score blend
-      const yearsFit = clamp01(years / (jd.minYearsExperience || 4));
-      const eduFit = jd.educationLevel
-        ? (base.education.toLowerCase().includes(jd.educationLevel.toLowerCase()) ? 1 : 0.6)
-        : 0.8;
-
-      const rawScore = 0.55 * heur.coverage + 0.25 * yearsFit + 0.20 * eduFit;
-      base.matchScore = Math.round(100 * clamp01(rawScore));
-
-      base.formatted =
-        `Name: ${base.name}\n` +
-        `Email: ${base.email}\n` +
-        `Phone: ${base.phone}\n` +
-        `Location: ${base.location}\n` +
-        `Title: ${base.title}\n` +
-        `Experience: ${base.yearsExperience} years\n` +
-        `Education: ${base.education}\n` +
-        `Skills: ${base.skills.join(", ")}\n\n` +
-        `Summary:\n${base.summary}`;
-
-      candidates.push(base);
+    // Collect files
+    const files: File[] = [];
+    for (const [key, val] of form.entries()) {
+      if (key === "resumes" && val instanceof File) files.push(val);
+    }
+    if (files.length === 0) {
+      return NextResponse.json(
+        { error: "No files uploaded under key 'resumes'." },
+        { status: 400 }
+      );
     }
 
-    candidates.sort((a, b) => b.matchScore - a.matchScore);
-    const payload: AnalysisResult = { candidates };
+    const outCandidates: Candidate[] = [];
+
+    // Process each resume
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i];
+      const id = `${i}-${f.name}`;
+      let text = "";
+      try {
+        text = await fileToText(f);
+      } catch (e) {
+        text = "";
+      }
+
+      const c = baseCandidate(id);
+
+      // 1) LLM profile extraction
+      const profile = text ? await llmExtractProfile(text) : {};
+      c.name = profile.name || c.name;
+      c.email = profile.email || c.email;
+      c.phone = profile.phone || c.phone;
+      c.location = profile.location || c.location;
+      c.title = profile.headline || profile.title || c.title;
+      c.summary = profile.summary || c.summary;
+
+      const yearsLLM = Number(profile.yearsExperience || 0);
+      const yearsHeur = yearsLLM || 0; // (your estimateYears is inside gemini util if you kept it)
+      c.yearsExperience = Math.max(0, Math.round(yearsHeur));
+
+      // Education (first degree)
+      if (Array.isArray(profile.education) && profile.education.length) {
+        const e0 = profile.education[0];
+        const degree = [e0?.degree, e0?.field].filter(Boolean).join(", ");
+        c.education = mapEduLevel(degree || "");
+      }
+
+      // Skills
+      const skillSets = ([] as string[])
+        .concat(profile.skills || [])
+        .concat(profile.tools || []);
+      c.skills = Array.from(new Set(skillSets.map((s: any) => String(s || "").trim()).filter(Boolean)));
+
+      // 2) Quick heuristic score (JD coverage)
+      const h = scoreHeuristically(text, jdKeywords);
+      c.skillsEvidencePct = Math.round(h.coverage * 100);
+
+      // 3) Domain similarity → mismatch flag
+      const sim = domainSimilarity(jd, text);
+      c.domainMismatch = sim < 0.12; // tuneable threshold
+
+      // 4) LLM grading
+      const grade = await llmGradeCandidate(jd, text);
+      c.matchScore = Math.round(
+        clamp01(0.65 * h.coverage + 0.35 * clamp01((grade.score || 0) / 100)) * 100
+      );
+      c.strengths = Array.isArray(grade.strengths) ? grade.strengths : [];
+      c.weaknesses = Array.isArray(grade.weaknesses) ? grade.weaknesses : [];
+      c.educationSummary = grade.educationSummary || "";
+      if (Array.isArray(grade.questions)) c.questions = grade.questions;
+
+      // Gaps / mentoring
+      const missing = Array.isArray(grade.missingSkills) ? grade.missingSkills : [];
+      c.gaps = missing;
+      c.mentoringNeeds = (missing || []).slice(0, 3).map((g: string) => `Mentorship in ${g}`);
+
+      outCandidates.push(c);
+    }
+
+    const payload: AnalysisResult = {
+      jd,
+      candidates: outCandidates,
+    };
     return NextResponse.json(payload, { status: 200 });
   } catch (e: any) {
     console.error(e);
-    return NextResponse.json({ error: e?.message || "Internal error" }, { status: 500 });
+    return NextResponse.json(
+      { error: e?.message || "Failed to analyze resumes." },
+      { status: 500 }
+    );
   }
 }
