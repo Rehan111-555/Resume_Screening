@@ -1,27 +1,11 @@
 // types/index.ts
-export type JobRequirements = {
-  role?: string;
-  title?: string;
-  position?: string;
-  description?: string;
-  requiredSkills?: string[];
-  niceToHave?: string[];
-
-  // ⬇️ NEW — matches your job-requirements UI
-  minYearsExperience?: number;   // e.g. 2, 4, 5
-  educationLevel?: string;       // e.g. "Bachelor", "Master", "PhD"
-
-  // keep older fields for compatibility
-  education?: string;
-  domain?: string;
-};
-
 export type UploadedFile = {
-  id: string;
+  id: string; // used by UI to remove files
   name: string;
-  size: number;
   type: string;
-  file: File;
+  size: number;
+  /** Original binary/text content captured in the browser. */
+  content: ArrayBuffer | Uint8Array | string;
 };
 
 export type Candidate = {
@@ -36,10 +20,8 @@ export type Candidate = {
   skills: string[];
   summary: string;
 
-  matchScore: number;
-  skillsEvidencePct: number;
-  yearsScore: number;
-  eduScore: number;
+  matchScore: number;          // 0..100
+  skillsEvidencePct: number;   // 0..100
   domainMismatch: boolean;
 
   strengths: string[];
@@ -47,15 +29,26 @@ export type Candidate = {
   gaps: string[];
   mentoringNeeds: string[];
 
-  matchedSkills?: string[];
-  missingSkills?: string[];
-  questions?: string[];
-  educationSummary?: string;
+  questions: string[];
 
-  formatted?: string;
+  yearsScore: number;          // optional sub-scores used in UI
+  eduScore: number;
+
+  /** Preformatted long-form Markdown per candidate for copy/export */
+  formatted: string;
 };
 
 export type AnalysisResult = {
   candidates: Candidate[];
-  jdText?: string;
+};
+
+export type JobRequirements = {
+  role?: string;
+  position?: string;
+  title?: string;
+  description?: string;
+  requiredSkills?: string[];
+  niceToHave?: string[];
+  educationLevel?: string;
+  minYearsExperience?: number;
 };
