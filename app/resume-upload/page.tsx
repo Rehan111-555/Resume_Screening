@@ -10,23 +10,36 @@ import type { UploadedFile, AnalysisResult } from "@/types";
 
 /** Safely turn an UploadedFile into a real File for FormData */
 function toFile(u: UploadedFile): File {
-  // If the native File was stored, use it directly.
+  // 1) If the native File was stored, use it directly.
   if (u.file instanceof File) return u.file;
 
-  // Normalize content into a BlobPart (string | ArrayBuffer | ArrayBufferView)
+  // 2) Normalize to a BlobPart
   let part: BlobPart;
+
   if (typeof u.content === "string") {
-    part = u.content;
-  } else if (u.content instanceof Uint8Array) {
-    part = u.content;
+    part = u.content; // text resumes
   } else if (u.content instanceof ArrayBuffer) {
-    part = new Uint8Array(u.content);
+    // already an ArrayBuffer
+    part = u.content as ArrayBuffer;
+  } else if (u.content instanceof Uint8Array) {
+    // Some environments type Uint8Array as Uint8Array<ArrayBufferLike>.
+    // Convert the view to a true ArrayBuffer slice the File/Blob constructor accepts.
+    const start = u.content.byteOffset;
+    const end = start + u.content.byteLength;
+    const buf = (u.content.buffer as ArrayBuffer).slice(start, end);
+    part = buf;
+  } else if (u.content && typeof (u.content as any).buffer === "object") {
+    // Fallback for other typed arrays (Int8Array, etc.)
+    const v = u.content as unknown as { buffer: ArrayBufferLike; byteOffset: number; byteLength: number };
+    const start = v.byteOffset || 0;
+    const end = start + (v.byteLength || 0);
+    const buf = (v.buffer as ArrayBuffer).slice(start, end);
+    part = buf;
   } else {
-    // Fallback — empty file if nothing was captured
-    part = new Uint8Array();
+    // 3) Ultimate fallback — empty file so the upload never crashes
+    part = new ArrayBuffer(0);
   }
 
-  // Ensure name/type exist
   const name = u.name || "upload";
   const type = u.type || "application/octet-stream";
   return new File([part], name, { type });
@@ -117,12 +130,12 @@ export default function ResumeUploadPage() {
           {loading ? "Analyzing…" : "Analyze with AI"}
         </button>
 
-        <button
-          onClick={() => router.push("/job-requirements")}
-          className="px-5 py-2.5 rounded-xl border border-gray-300 text-gray-700 hover:bg-gray-50"
-        >
-          Back
-        </button>
+      <button
+        onClick={() => router.push("/job-requirements")}
+        className="px-5 py-2.5 rounded-xl border border-gray-300 text-gray-700 hover:bg-gray-50"
+      >
+        Back
+      </button>
       </div>
 
       {error && <div className="mt-4 text-red-600">{error}</div>}
