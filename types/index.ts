@@ -1,3 +1,5 @@
+// types/index.ts
+
 export interface JobRequirements {
   title: string;
   description: string;
@@ -5,8 +7,12 @@ export interface JobRequirements {
   educationLevel?: string;
 }
 
+export interface UploadedFile {
+  id: string;           // stable id for remove button
+  file: File;           // keep the native File (no custom buffers)
+}
+
 export interface Candidate {
-  // identity
   id: string;
   name: string;
   email: string;
@@ -14,28 +20,27 @@ export interface Candidate {
   location: string;
   title: string;
 
-  // resume-derived
   yearsExperience: number;
   education: string;
   skills: string[];
   summary: string;
 
-  // scores
-  matchScore: number;          // 0–100
-  skillsEvidencePct: number;   // 0–100
-  domainMismatch: boolean;
+  // scoring
+  matchScore: number;          // 0..100
+  skillsEvidencePct: number;   // 0..100
+  domainMismatch: boolean;     // true => show "Domain not matching"
+  yearsScore?: number;         // optional weight
+  eduScore?: number;           // optional weight
 
-  // detail sections (always arrays, never undefined)
-  strengths: string[];
-  weaknesses: string[];
-  gaps: string[];
-  mentoringNeeds: string[];
+  // analysis strips (safe optional)
+  strengths?: string[];
+  weaknesses?: string[];
+  gaps?: string[];
+  mentoringNeeds?: string[];
+  questions?: string[];
+  educationSummary?: string;
 
-  // Q&A (empty when domainMismatch = true)
-  questions: string[];
-
-  // extra display info (safe strings)
-  educationSummary: string;
+  // UI helper – formatted text for Copy button (optional)
   formatted?: string;
 }
 
@@ -43,11 +48,4 @@ export interface AnalysisResult {
   candidates: Candidate[];
 }
 
-export type UploadedFile = {
-  name: string;
-  type: string;
-  size: number;
-  // content as one of the typical web upload shapes — we'll normalize in the page
-  content?: string | ArrayBuffer | Uint8Array<ArrayBufferLike>;
-  file?: File; // when available (browser)
-};
+export type SortKey = "match" | "skills" | "years";
