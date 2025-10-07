@@ -1,49 +1,44 @@
+// app/results/page.tsx
 "use client";
 
-import * as React from "react";
+import { useState } from "react";
 import { useApp } from "@/contexts/AppContext";
-import type { Candidate } from "@/types";
 import CandidateCard from "@/components/CandidateCard";
 import CandidateDetail from "@/components/CandidateDetail";
+import type { Candidate } from "@/types";
 
 export default function ResultsPage() {
   const { state } = useApp();
   const { analysisResult } = state;
 
-  const [selectedCandidate, setSelectedCandidate] = React.useState<Candidate | null>(null);
-  const [isDetailOpen, setIsDetailOpen] = React.useState<boolean>(false);
+  const [selected, setSelected] = useState<Candidate | null>(null);
+  const [open, setOpen] = useState(false);
 
-  const candidates: Candidate[] = analysisResult?.candidates || [];
-
-  function handleCandidateClick(c: Candidate) {
-    setSelectedCandidate(c);
-    setIsDetailOpen(true);
-  }
+  const list = analysisResult?.candidates ?? [];
 
   return (
-    <div className="mx-auto max-w-6xl px-4 py-8">
-      <h1 className="text-2xl font-semibold mb-4">Candidates analyzed by AI</h1>
+    <div className="max-w-6xl mx-auto px-4 py-8">
+      <h1 className="text-2xl font-bold mb-6">Candidates analyzed by AI</h1>
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-        {candidates.map((candidate) => (
+        {list.map((c) => (
           <CandidateCard
-            key={candidate.id}
-            candidate={candidate}
-            onClick={() => handleCandidateClick(candidate)}
+            key={c.id}
+            candidate={c}
+            isSelected={selected?.id === c.id}
+            onClick={() => {
+              setSelected(c);
+              setOpen(true);
+            }}
           />
         ))}
       </div>
 
-      {/* Detail panel (inline; if you wrap this in a modal, the props are already there) */}
-      {selectedCandidate && (
-        <div className="mt-10 rounded-xl border p-6 bg-white">
-          <CandidateDetail
-            candidate={selectedCandidate}
-            isOpen={isDetailOpen}
-            onClose={() => setIsDetailOpen(false)}
-          />
-        </div>
-      )}
+      <CandidateDetail
+        candidate={selected}
+        isOpen={open}
+        onClose={() => setOpen(false)}
+      />
     </div>
   );
 }
