@@ -1,150 +1,99 @@
-// components/CandidateDetail.tsx
 "use client";
 
-import * as React from "react";
+import { useState } from "react";
 import type { Candidate } from "@/types";
 
 type Props = {
   candidate: Candidate | null;
-  /** Optional; kept for compatibility with app/results/page.tsx */
-  isOpen?: boolean;
-  /** Optional; kept for compatibility with app/results/page.tsx */
-  onClose?: () => void;
+  onClose: () => void;
 };
 
-export default function CandidateDetail({ candidate, isOpen = true, onClose }: Props) {
-  const [copied, setCopied] = React.useState(false);
+export default function CandidateDetail({ candidate, onClose }: Props) {
+  const [copied, setCopied] = useState(false);
+  if (!candidate) return null;
 
-  if (!candidate || !isOpen) return null;
-
-  async function handleCopy() {
+  async function copyFormatted() {
     try {
       const text = candidate?.formatted || "";
       if (!text) return;
       await navigator.clipboard.writeText(text);
       setCopied(true);
       setTimeout(() => setCopied(false), 1200);
-    } catch {
-      /* ignore */
-    }
+    } catch {}
   }
 
   return (
-    <div className="fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-black/40 p-4">
-      <div className="w-full max-w-5xl rounded-xl bg-white p-6 shadow-xl">
+    <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
+      <div className="bg-white w-full max-w-4xl rounded-2xl p-6">
         <div className="flex items-center justify-between">
-          <h2 className="text-xl font-semibold">Candidate Details</h2>
-          <div className="flex gap-2">
+          <h2 className="text-lg font-semibold">Candidate Details</h2>
+          <div className="space-x-2">
             <button
-              onClick={handleCopy}
-              className="rounded-md bg-indigo-600 px-3 py-1.5 text-white hover:opacity-95"
+              onClick={copyFormatted}
+              className="text-sm bg-indigo-600 text-white rounded px-3 py-1"
             >
               {copied ? "Copied!" : "Copy as Text"}
             </button>
-            <button
-              onClick={onClose}
-              className="rounded-md border border-gray-300 px-3 py-1.5 text-gray-700 hover:bg-gray-50"
-            >
+            <button onClick={onClose} className="text-sm rounded px-3 py-1 border">
               Close
             </button>
           </div>
         </div>
 
-        <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-2">
-          {/* Left: personal/score */}
-          <div className="space-y-4">
-            <div>
-              <h3 className="text-sm font-medium text-gray-700">Personal Information</h3>
-              <div className="mt-2 text-sm text-gray-600">
-                <div>Email: {candidate.email || "Not specified"}</div>
-                <div>Phone: {candidate.phone || "Not specified"}</div>
-                <div>Location: {candidate.location || "Not specified"}</div>
-              </div>
-            </div>
+        <div className="mt-4 grid grid-cols-2 gap-6">
+          <section>
+            <h3 className="font-medium mb-2">Personal Information</h3>
+            <p className="text-sm">Email: {candidate.email || "Not specified"}</p>
+            <p className="text-sm">Phone: {candidate.phone || "Not specified"}</p>
+            <p className="text-sm">Location: {candidate.location || "Not specified"}</p>
+          </section>
 
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <div className="rounded-lg border p-3">
-                <div className="text-xs text-gray-500">Overall Match</div>
-                <div className="text-2xl font-semibold">{Math.round(candidate.matchScore)}%</div>
-              </div>
-              <div className="rounded-lg border p-3">
-                <div className="text-xs text-gray-500">Experience</div>
-                <div className="text-2xl font-semibold">
-                  {candidate.yearsExperience} {candidate.yearsExperience === 1 ? "year" : "years"}
-                </div>
-              </div>
-              <div className="rounded-lg border p-3">
-                <div className="text-xs text-gray-500">Skills & Evidence</div>
-                <div className="text-2xl font-semibold">{candidate.skillsEvidencePct}%</div>
-              </div>
-              <div className="rounded-lg border p-3">
-                <div className="text-xs text-gray-500">Education</div>
-                <div className="text-2xl font-semibold">{candidate.education || "—"}</div>
-              </div>
-            </div>
+          <section>
+            <h3 className="font-medium mb-2">Professional Summary</h3>
+            <p className="text-sm whitespace-pre-wrap">{candidate.summary || "—"}</p>
+          </section>
+        </div>
 
-            <div>
-              <h3 className="text-sm font-medium text-gray-700">Skills</h3>
-              <div className="mt-2 text-sm text-gray-700">
-                {candidate.skills?.length ? candidate.skills.join(", ") : "—"}
-              </div>
-            </div>
+        <div className="mt-4 grid grid-cols-3 gap-4">
+          <div className="rounded-xl border p-3">
+            <div className="text-xs text-gray-500">Overall Match</div>
+            <div className="text-2xl font-semibold">{candidate.matchScore}%</div>
           </div>
-
-          {/* Right: summary */}
-          <div>
-            <h3 className="text-sm font-medium text-gray-700">Professional Summary</h3>
-            <div className="mt-2 whitespace-pre-wrap rounded-lg border p-3 text-sm text-gray-700">
-              {candidate.summary || "—"}
-            </div>
+          <div className="rounded-xl border p-3">
+            <div className="text-xs text-gray-500">Experience</div>
+            <div className="text-2xl font-semibold">{candidate.yearsExperience} years</div>
+          </div>
+          <div className="rounded-xl border p-3">
+            <div className="text-xs text-gray-500">Skills & Evidence</div>
+            <div className="text-2xl font-semibold">{candidate.skillsEvidencePct}%</div>
           </div>
         </div>
 
-        <div className="mt-6 grid grid-cols-1 gap-6 md:grid-cols-2">
-          <div>
-            <h3 className="mb-2 text-sm font-semibold text-emerald-700">Strengths</h3>
-            <ul className="list-disc pl-5 text-sm text-gray-800">
-              {(candidate.strengths || []).length
-                ? candidate.strengths.map((s, i) => <li key={i}>{s}</li>)
-                : <li>—</li>}
+        <div className="mt-6 grid grid-cols-2 gap-8">
+          <section>
+            <h4 className="text-sm font-semibold mb-2">Strengths</h4>
+            <ul className="list-disc pl-5 space-y-1 text-sm">
+              {candidate.strengths?.length ? candidate.strengths.map((s, i) => <li key={i}>{s}</li>) : <li>—</li>}
             </ul>
-          </div>
 
-          <div>
-            <h3 className="mb-2 text-sm font-semibold text-rose-700">Areas for Improvement</h3>
-            <ul className="list-disc pl-5 text-sm text-gray-800">
-              {(candidate.weaknesses || []).length
-                ? candidate.weaknesses.map((s, i) => <li key={i}>{s}</li>)
-                : <li>—</li>}
+            <h4 className="text-sm font-semibold mt-6 mb-2">Identified Gaps</h4>
+            <ul className="list-disc pl-5 space-y-1 text-sm">
+              {candidate.gaps?.length ? candidate.gaps.map((s, i) => <li key={i}>{s}</li>) : <li>—</li>}
             </ul>
-          </div>
+          </section>
 
-          <div>
-            <h3 className="mb-2 text-sm font-semibold text-amber-700">Identified Gaps</h3>
-            <ul className="list-disc pl-5 text-sm text-gray-800">
-              {(candidate.gaps || []).length ? candidate.gaps.map((g, i) => <li key={i}>{g}</li>) : <li>—</li>}
+          <section>
+            <h4 className="text-sm font-semibold mb-2">Areas for Improvement</h4>
+            <ul className="list-disc pl-5 space-y-1 text-sm">
+              {candidate.weaknesses?.length ? candidate.weaknesses.map((s, i) => <li key={i}>{s}</li>) : <li>—</li>}
             </ul>
-          </div>
 
-          <div>
-            <h3 className="mb-2 text-sm font-semibold text-purple-700">Mentoring Needs</h3>
-            <ul className="list-disc pl-5 text-sm text-gray-800">
-              {(candidate.mentoringNeeds || []).length
-                ? candidate.mentoringNeeds.map((m, i) => <li key={i}>{m}</li>)
-                : <li>—</li>}
+            <h4 className="text-sm font-semibold mt-6 mb-2">Mentoring Needs</h4>
+            <ul className="list-disc pl-5 space-y-1 text-sm">
+              {candidate.mentoringNeeds?.length ? candidate.mentoringNeeds.map((s, i) => <li key={i}>{s}</li>) : <li>—</li>}
             </ul>
-          </div>
+          </section>
         </div>
-
-        {/* Optional questions */}
-        {!!candidate.questions?.length && !candidate.domainMismatch && (
-          <div className="mt-6">
-            <h3 className="mb-2 text-sm font-semibold text-gray-700">AI Interview Questions</h3>
-            <ul className="list-disc pl-5 text-sm text-gray-800">
-              {candidate.questions.map((q, i) => <li key={i}>{q}</li>)}
-            </ul>
-          </div>
-        )}
       </div>
     </div>
   );
