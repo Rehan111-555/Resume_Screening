@@ -4,9 +4,23 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import UploadBox from "@/components/UploadBox";
-import ProgressBar from "@/components/ProgressBar";
 import { useApp } from "@/contexts/AppContext";
 import type { UploadedFile, AnalysisResult } from "@/types";
+
+function toFile(u: UploadedFile): File {
+  if (u.file instanceof File) return u.file;
+
+  let part: BlobPart;
+  if (u.content instanceof Blob) part = u.content;
+  else if (typeof u.content === "string") part = u.content;
+  else if (u.content instanceof ArrayBuffer) part = new Uint8Array(u.content);
+  else if (u.content instanceof Uint8Array) part = u.content;
+  else part = "";
+
+  const name = u.name || "upload";
+  const type = u.type || "application/octet-stream";
+  return new File([part], name, { type });
+}
 
 export default function ResumeUploadPage() {
   const router = useRouter();
@@ -38,17 +52,14 @@ export default function ResumeUploadPage() {
 
       const formData = new FormData();
       formData.append("jobRequirements", JSON.stringify(jobRequirements));
-      for (const u of uploadedFiles) {
-        // send the native File — no custom conversions needed
-        formData.append("resumes", u.file, u.file.name);
+      for (const f of uploadedFiles) {
+        const file = toFile(f);
+        formData.append("resumes", file, file.name);
       }
 
-      const res = await fetch("/api/analyze-resumes", {
-        method: "POST",
-        body: formData,
-      });
+      const res = await fetch("/api/analyze-resumes", { method: "POST", body: formData });
       const raw = await res.text();
-      if (!res.ok) throw new Error(raw.slice(0, 400));
+      if (!res.ok) throw new Error(raw.slice(0, 500));
 
       const data: AnalysisResult = JSON.parse(raw);
       dispatch({ type: "SET_ANALYSIS_RESULT", payload: data });
@@ -63,14 +74,8 @@ export default function ResumeUploadPage() {
 
   return (
     <main className="max-w-4xl mx-auto px-4 py-8">
-      <ProgressBar currentStep={1} totalSteps={3} labels={["Job Requirements", "Upload Resumes", "Results"]} />
-
-      <h1 className="text-3xl font-extrabold mb-2 bg-gradient-to-r from-cyan-500 via-blue-500 to-indigo-600 bg-clip-text text-transparent">
-        Upload Resumes
-      </h1>
-      <p className="text-gray-600 mb-6">
-        Upload PDF / DOCX / TXT (up to 100). We’ll analyze them against your JD.
-      </p>
+      <h1 className="text-3xl font-extrabold mb-2">Upload Resumes</h1>
+      <p className="text-gray-600 mb-6">Upload PDF or DOCX (up to 100 files). We’ll analyze them against your JD.</p>
 
       <UploadBox uploadedFiles={uploadedFiles} onFilesUpload={setFiles} />
 
@@ -91,7 +96,7 @@ export default function ResumeUploadPage() {
         </button>
       </div>
 
-      {error && <div className="mt-4 text-rose-600">{error}</div>}
+      {error && <div className="mt-4 text-red-600">{error}</div>}
       {success && <div className="mt-4 text-green-700">{success}</div>}
     </main>
   );
