@@ -1,365 +1,202 @@
-/* app/api/analyze-resumes/route.ts */
 import { NextRequest, NextResponse } from "next/server";
-import crypto from "crypto";
-import mammoth from "mammoth";
-import type { Candidate, AnalysisResult, JobRequirements } from "@/types";
+import { convert } from "html-to-text";
+import type { AnalysisResult, Candidate, JobRequirements } from "@/types";
 import {
   llmExtractProfile,
+  llmGradeCandidate,
   llmDeriveKeywords,
   scoreHeuristically,
-  type JDKeywords,
+  estimateYears,
+  cleanTokens,
   mapEduLevel,
   eduFit,
   clamp01,
 } from "@/utils/geminiClient.server";
 
-/* ───────────────────────── Small utils ───────────────────────── */
+// ---- parse utility ----------------------------------------------------------
 
-function stripHtml(input: string): string {
-  return (input || "")
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-const MONTHS = new Map<string, number>([
-  ["jan", 0],["january", 0],
-  ["feb", 1],["february", 1],
-  ["mar", 2],["march", 2],
-  ["apr", 3],["april", 3],
-  ["may", 4],
-  ["jun", 5],["june", 5],
-  ["jul", 6],["july", 6],
-  ["aug", 7],["august", 7],
-  ["sep", 8],["september", 8],
-  ["oct", 9],["october", 9],
-  ["nov",10],["november",10],
-  ["dec",11],["december",11],
-]);
-
-function ymToIndex(y:number,m:number){ return y*12+m; }
-function indexToYM(k:number){ return {y:Math.floor(k/12), m:k%12}; }
-
-/** Merge month ranges and return total months (deduped) */
-function totalMonthsFromRanges(ranges: Array<{startYM:number,endYM:number}>): number {
-  const seen = new Set<number>();
-  for (const r of ranges) {
-    const a = Math.min(r.startYM, r.endYM);
-    const b = Math.max(r.startYM, r.endYM);
-    for (let k=a; k<=b; k++) seen.add(k);
+async function fileToText(f: File): Promise<string> {
+  // best-effort: if it's html-ish turn into text; else decode as utf-8
+  const buf = new Uint8Array(await f.arrayBuffer());
+  const sniff = new TextDecoder("utf-8", { fatal: false }).decode(buf.slice(0, 2048));
+  const isHtml = /<\/?[a-z][\s\S]*>/i.test(sniff);
+  if (isHtml) {
+    return convert(new TextDecoder().decode(buf), { wordwrap: false });
   }
-  return seen.size;
-}
-
-/** Very robust years extractor: merges ranges and also handles “X yr Y mo”, “10+ years”, “since 2016”, “6 months” */
-function robustYears(text: string): number {
-  const t = (text || "").replace(/\s+/g, " ").toLowerCase();
-  const now = new Date();
-  const currYM = ymToIndex(now.getFullYear(), now.getMonth());
-  const ranges: Array<{startYM:number,endYM:number}> = [];
-
-  // Month Year — Month Year | Month Year — present | YYYY — YYYY | YYYY — present
-  const dateRange =
-    /\b(?:(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+)?(\d{4})\s*(?:-|–|—|to)\s*(?:present|current|now|(?:(?:(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+)?(\d{4})))\b/g;
-  let m: RegExpExecArray | null;
-  while ((m = dateRange.exec(t))) {
-    const sm = m[1]; const sy = parseInt(m[2],10);
-    const em = m[3]; const ey = m[3] ? parseInt(m[3],10) : NaN;
-    const startMonth = sm && MONTHS.has(sm) ? MONTHS.get(sm)! : 0;
-    const endMonth   = em && MONTHS.has(em) ? MONTHS.get(em)! : 11;
-    const startYM = ymToIndex(sy, startMonth);
-    const endYM   = isNaN(ey) ? currYM : ymToIndex(ey, endMonth);
-    if (sy >= 1980 && startYM <= endYM) ranges.push({ startYM, endYM });
+  try {
+    return new TextDecoder("utf-8", { fatal: false }).decode(buf);
+  } catch {
+    return ""; // last resort
   }
-
-  // "since 2016" / "since Jan 2019"
-  const since =
-    /\bsince\s+(?:(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+)?(\d{4})\b/g;
-  while ((m = since.exec(t))) {
-    const sm = m[1]; const sy = parseInt(m[2],10);
-    const startMonth = sm && MONTHS.has(sm) ? MONTHS.get(sm)! : 0;
-    const startYM = ymToIndex(sy, startMonth);
-    if (sy >= 1980 && startYM <= currYM) ranges.push({ startYM, endYM: currYM });
-  }
-
-  // "X yr Y mo" | "X years Y months" | "X+ years" | only months
-  let numericMonths = 0;
-  const yrMo = /\b(\d+)\s*(?:yr|yrs|year|years)\b(?:\s*(\d+)\s*(?:mo|mos|month|months)\b)?/g;
-  while ((m = yrMo.exec(t))) {
-    const y = parseInt(m[1],10);
-    const mo = m[2] ? parseInt(m[2],10) : 0;
-    if (y >= 0 && y <= 45 && mo >= 0 && mo <= 11) numericMonths = Math.max(numericMonths, y*12+mo);
-  }
-  const plusYears = /\b(\d+)\s*\+\s*years?\b/g;
-  while ((m = plusYears.exec(t))) {
-    const y = parseInt(m[1],10);
-    numericMonths = Math.max(numericMonths, y*12);
-  }
-  const onlyMonths = /\b(\d+)\s*months?\b/g;
-  while ((m = onlyMonths.exec(t))) {
-    const mo = parseInt(m[1],10);
-    if (mo <= 600) numericMonths = Math.max(numericMonths, mo);
-  }
-
-  const monthsFromRanges = totalMonthsFromRanges(ranges);
-  const months = Math.max(monthsFromRanges, numericMonths);
-  return Math.min(45, Math.round(months / 12));
 }
 
-function tokenize(s: string): string[] {
-  return (s || "")
-    .toLowerCase()
-    .replace(/[^a-z0-9\+\.\-#& ]+/g, " ")
-    .split(/\s+/)
-    .filter(Boolean);
+function safe(s?: any): string {
+  const x = String(s ?? "").trim();
+  return x;
 }
 
-const BAD_SKILLS = new Set(
-  [
-    "problem solving","communication","teamwork","leadership","best","best practices","practices",
-    "proactive","experience","strong","developer","development","customizing","shopify s",
-  ].map((x)=>x.toLowerCase())
-);
-
-function cleanTokens(list: string[]): string[] {
-  return Array.from(
-    new Set(
-      (list || [])
-        .map((x) => String(x || "").trim().toLowerCase())
-        .filter((x) => x.length > 2 && !BAD_SKILLS.has(x))
-    )
-  );
-}
-
-function toSet(xs: string[]): Set<string> {
-  const s = new Set<string>();
-  for (const x of xs) s.add(x.trim().toLowerCase());
-  return s;
-}
-function overlapCount(a: Set<string>, b: Set<string>): number {
-  let c = 0;
-  for (const x of a) if (b.has(x)) c++;
-  return c;
-}
-function jaccard(a: Set<string>, b: Set<string>): number {
-  let inter = 0;
-  for (const x of a) if (b.has(x)) inter++;
-  const union = a.size + b.size - inter;
-  return union ? inter / union : 0;
-}
-
-/** Build a token set representing the resume (profile fields + raw fallback) */
-function buildResumeTokenSet(profile: any, raw: string): Set<string> {
-  const pile: string[] = [];
-  if (Array.isArray(profile?.skills)) pile.push(...profile.skills);
-  if (Array.isArray(profile?.tools)) pile.push(...profile.tools);
-  if (Array.isArray(profile?.industryDomains)) pile.push(...profile.industryDomains);
-  if (Array.isArray(profile?.experience)) {
-    for (const e of profile.experience) {
-      if (Array.isArray(e?.tech)) pile.push(...e.tech);
-      if (Array.isArray(e?.achievements)) pile.push(...e.achievements);
-      if (e?.title) pile.push(e.title);
-      if (e?.company) pile.push(e.company);
+// very small, robust domain match: if at least one “must” token or one of its synonyms
+function domainOK(resumeText: string, jdMust: { name: string; synonyms: string[] }[]): boolean {
+  if (!jdMust.length) return true;
+  const hay = ` ${resumeText.toLowerCase().replace(/[^a-z0-9 +.#&]/g, " ")} `;
+  for (const m of jdMust) {
+    for (const syn of [m.name, ...m.synonyms]) {
+      const p = ` ${syn.toLowerCase().trim()} `;
+      if (hay.includes(p)) return true;
     }
   }
-  if (profile?.headline) pile.push(profile.headline);
-  if (profile?.summary) pile.push(profile.summary);
-  // fallback: raw tokens too
-  pile.push(...tokenize(raw));
-  return toSet(cleanTokens(pile));
+  return false;
 }
 
-/** Domain decision: tolerant and not hardcoded */
-function computeDomainMatch(kw: JDKeywords, resumeTokens: Set<string>): boolean {
-  const must = toSet(kw.must.map(k => k.name));
-  const nice = toSet(kw.nice.map(k => k.name));
-
-  // Strong signal: any MUST present
-  if (overlapCount(must, resumeTokens) >= 1) return true;
-
-  // Moderate: at least 2 combined overlaps across must+nice
-  const all = new Set<string>([...must, ...nice]);
-  if (overlapCount(all, resumeTokens) >= 2) return true;
-
-  // Soft: Jaccard on token sets
-  const sim = jaccard(all, resumeTokens);
-  return sim >= 0.03; // forgiving
+function nonEmpty<T>(v: T[] | undefined): T[] {
+  return Array.isArray(v) ? v.filter(Boolean as any) : [];
 }
 
-/* ──────────────────────── File extraction ─────────────────────── */
-
-async function extractFromPDF(buf: ArrayBuffer): Promise<string> {
-  try {
-    // Load only if installed; otherwise fall back to blank (no crash)
-    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-    // @ts-ignore
-    const pdfParse = (await import("pdf-parse")).default as any;
-    const out = await pdfParse(Buffer.from(buf));
-    const s = String(out?.text || "");
-    return stripHtml(s);
-  } catch {
-    return "";
-  }
+function makeFormattedBlock(c: Candidate): string {
+  // short plain-text “copy as text”
+  const bullets = (title: string, items: string[]) =>
+    items.length ? `\n${title}\n- ${items.join("\n- ")}` : "";
+  return [
+    `## Candidate Details — ${c.name || "—"}`,
+    `Email: ${c.email || "—"}`,
+    `Phone: ${c.phone || "—"}`,
+    `Location: ${c.location || "—"}`,
+    "",
+    `Summary:\n${c.summary || "—"}`,
+    "",
+    `Experience: ${c.yearsExperience || 0} years`,
+    `Education: ${c.education || c.educationSummary || "—"}`,
+    "",
+    bullets("Skills", c.skills),
+    bullets("Strengths", c.strengths),
+    bullets("Areas for Improvement", c.weaknesses),
+    bullets("Identified Gaps", c.gaps),
+    bullets("Mentoring Needs", c.mentoringNeeds),
+  ].join("\n");
 }
 
-async function extractTextFromFile(f: File): Promise<string> {
-  const type = (f.type || "").toLowerCase();
-  const buf = await f.arrayBuffer();
+// ---- API route --------------------------------------------------------------
 
-  if (type.includes("pdf")) {
-    return await extractFromPDF(buf);
-  }
-  if (type.includes("word") || f.name.toLowerCase().endsWith(".docx")) {
-    try {
-      const out = await mammoth.extractRawText({ buffer: Buffer.from(buf) });
-      return stripHtml(out.value || "");
-    } catch {
-      return "";
-    }
-  }
-
-  // plain text / html
-  try {
-    const s = await f.text();
-    return stripHtml(s);
-  } catch {
-    return "";
-  }
-}
-
-/* ───────────────────────── Base candidate ─────────────────────── */
-
-function baseCandidate(id: string): Candidate {
-  return {
-    id,
-    name: "",
-    email: "",
-    phone: "",
-    location: "",
-    title: "",
-    yearsExperience: 0,
-    education: "",
-    skills: [],
-    summary: "",
-    matchScore: 0,
-    skillsEvidencePct: 0,
-    domainMismatch: false,
-    yearsScore: 0,
-    eduScore: 0,
-  };
-}
-
-/* ───────────────────────────── Route ──────────────────────────── */
-
-export const dynamic = "force-dynamic";
+export const runtime = "nodejs"; // make sure File & Buffer behave consistently
 
 export async function POST(req: NextRequest) {
   try {
     const form = await req.formData();
 
-    // Job Requirements
-    const rawJR = form.get("jobRequirements") as string;
-    const jr: JobRequirements = rawJR ? JSON.parse(rawJR) : {
-      title: "",
-      description: "",
-      minYearsExperience: 0,
-      educationLevel: "",
-    };
+    const jdRaw = String(form.get("jobRequirements") || "{}");
+    const jd: JobRequirements = JSON.parse(jdRaw);
 
-    // Resumes
-    const files = form.getAll("resumes").filter(Boolean) as File[];
+    const files = form.getAll("resumes") as File[];
     if (!files.length) {
-      return NextResponse.json({ error: "No resumes" }, { status: 400 });
+      return NextResponse.json({ candidates: [] } satisfies AnalysisResult, { status: 200 });
     }
 
-    // Derive JD keywords once
-    const kw = await llmDeriveKeywords(`${jr.title}\n\n${jr.description || ""}`);
+    const jdText = [safe(jd.title), safe(jd.description)].filter(Boolean).join("\n");
+    const kw = await llmDeriveKeywords(jdText).catch(() => ({ must: [], nice: [] }));
 
-    const results: Candidate[] = [];
+    const out: Candidate[] = [];
 
     for (const file of files) {
-      const id = crypto.randomBytes(8).toString("hex");
-      const cand = baseCandidate(id);
+      // 1) raw text
+      const rawText = (await fileToText(file)).slice(0, 16000);
 
-      const raw = await extractTextFromFile(file);
-      if (!raw) {
-        // keep as blank candidate with domainMismatch true (no evidence)
-        cand.domainMismatch = true;
-        results.push(cand);
-        continue;
+      // 2) profile (LLM) with fallback
+      const prof = (await llmExtractProfile(rawText).catch(() => null)) || {};
+      const name = safe(prof.name);
+      const email = safe(prof.email);
+      const phone = safe(prof.phone);
+      const location = safe(prof.location);
+      const headline = safe(prof.headline);
+      const summary =
+        safe(prof.summary) ||
+        // fallback: first paragraph of the resume text
+        safe(rawText.split(/\n{2,}/)[0]).slice(0, 600);
+
+      // 3) years & education
+      const yearsLLM = Number(prof.yearsExperience || 0);
+      const yearsHeu = estimateYears(rawText);
+      const yearsExperience = Math.max(yearsLLM || 0, yearsHeu || 0);
+
+      const edu = mapEduLevel(
+        (Array.isArray(prof.education) && prof.education.map((e: any) => e?.degree || "").join(", ")) ||
+          safe(prof.educationSummary)
+      );
+
+      const skills = cleanTokens(
+        (Array.isArray(prof.skills) ? prof.skills : []).concat(
+          Array.isArray(prof.tools) ? prof.tools : []
+        )
+      ).slice(0, 24);
+
+      // 4) domain
+      const okDomain = domainOK(rawText, kw.must);
+
+      // 5) heuristic score + LLM grade (robust merge)
+      const heur = scoreHeuristically(rawText, kw);
+      let grade: any = {};
+      try {
+        grade = await llmGradeCandidate(jdText, rawText);
+      } catch {
+        grade = {};
       }
 
-      // LLM profile (deterministic)
-      const profile = await llmExtractProfile(raw);
+      const strengths = nonEmpty<string>(grade.strengths).slice(0, 8);
+      const weaknesses = nonEmpty<string>(grade.weaknesses).slice(0, 8);
+      const gaps = nonEmpty<string>(grade.missingSkills).slice(0, 8);
+      const mentoringNeeds = nonEmpty<string>(grade.questions) // use questions as coaching prompts fallback
+        .map((q) => q.replace(/\?+$/, ""))
+        .slice(0, 6);
 
-      // Fill visible basics
-      cand.name = profile?.name || "";
-      cand.email = profile?.email || "";
-      cand.phone = profile?.phone || "";
-      cand.location = profile?.location || "";
-      cand.title = profile?.headline || profile?.title || "";
-      cand.summary = profile?.summary || "";
+      const questions = okDomain ? nonEmpty<string>(grade.questions).slice(0, 6) : [];
 
-      // Education (mapped to a single string for card)
-      let eduStr = "";
-      if (Array.isArray(profile?.education) && profile.education.length) {
-        const e0 = profile.education[0];
-        eduStr = [mapEduLevel(e0?.degree || ""), e0?.field].filter(Boolean).join(" ");
-      } else if (profile?.educationSummary) {
-        eduStr = String(profile.educationSummary);
-      }
-      cand.education = eduStr || "";
+      // 6) scores
+      const skillsEvidencePct = Math.round(clamp01(heur.coverage) * 100);
+      const yearsScore = clamp01(
+        !jd.minYearsExperience ? 0.7 : Math.min(1, yearsExperience / Math.max(1, jd.minYearsExperience))
+      );
+      const eduScore = eduFit(jd.educationLevel, edu);
 
-      // Years of experience: prefer LLM, fallback to robust parser
-      let years = 0;
-      if (typeof profile?.yearsExperience === "number" && profile.yearsExperience > 0) {
-        years = Math.min(45, Math.round(profile.yearsExperience));
-      } else {
-        years = robustYears(raw);
-      }
-      cand.yearsExperience = years;
-
-      // Skill chips (clean)
-      const skillChips = cleanTokens(
-        Array.isArray(profile?.skills) ? profile.skills : []
-      ).slice(0, 12);
-      cand.skills = skillChips;
-
-      // Domain decision (tolerant)
-      const resumeTokens = buildResumeTokenSet(profile, raw);
-      const domainMatch = computeDomainMatch(kw, resumeTokens);
-      cand.domainMismatch = !domainMatch;
-
-      // Heuristic coverage -> skillsEvidencePct
-      const h = scoreHeuristically(raw, kw);
-      cand.skillsEvidencePct = Math.round(clamp01(h.coverage) * 100);
-
-      // Years & education score components
-      const reqY = Math.max(0, Number(jr.minYearsExperience || 0));
-      const yScore = reqY ? clamp01(years / reqY) : clamp01(years / 6); // 6y typical ramp
-      const eScore = eduFit(jr.educationLevel || "", cand.education || "");
-
-      cand.yearsScore = yScore;
-      cand.eduScore = eScore;
-
-      // Final match score (bounded & rounded)
+      // final blended match
       const match =
-        0.65 * h.coverage + 0.25 * yScore + 0.10 * eScore;
+        0.55 * clamp01(heur.coverage) +
+        0.25 * yearsScore +
+        0.12 * eduScore +
+        0.08 * (okDomain ? 1 : 0);
+      const matchScore = Math.round(match * 100);
 
-      cand.matchScore = Math.round(clamp01(domainMatch ? match : match * 0.2) * 100);
+      const c: Candidate = {
+        id: crypto.randomUUID(),
+        name: name || headline || file.name.replace(/\.(pdf|docx?|txt)$/i, ""),
+        email,
+        phone,
+        location,
+        title: headline || "",
+        yearsExperience,
+        education: edu || "",
+        skills,
+        summary,
 
-      results.push(cand);
+        matchScore,
+        skillsEvidencePct,
+        domainMismatch: !okDomain,
+
+        strengths,
+        weaknesses,
+        gaps,
+        mentoringNeeds,
+        questions,
+
+        educationSummary: edu || "",
+      };
+
+      c.formatted = makeFormattedBlock(c);
+      out.push(c);
     }
 
-    // Sort client might resort; we just return raw list
-    const payload: AnalysisResult = { candidates: results };
+    const payload: AnalysisResult = { candidates: out };
     return NextResponse.json(payload, { status: 200 });
   } catch (e: any) {
     console.error(e);
-    return NextResponse.json({ error: String(e?.message || e) }, { status: 500 });
+    return NextResponse.json({ error: e?.message || "failed" }, { status: 500 });
   }
 }
