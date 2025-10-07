@@ -1,5 +1,3 @@
-// types/index.ts
-
 export interface JobRequirements {
   title: string;
   description: string;
@@ -8,50 +6,48 @@ export interface JobRequirements {
 }
 
 export interface Candidate {
+  // identity
   id: string;
-
-  // basics parsed from resume
   name: string;
   email: string;
   phone: string;
   location: string;
-  title: string;              // headline / current title
-  yearsExperience: number;    // total years (robustly parsed)
-  education: string;          // single-line summary (e.g., "Bachelor CS")
-  skills: string[];           // cleaned skill chips
-  summary: string;            // brief professional summary
+  title: string;
 
-  // scores used by cards
-  matchScore: number;         // 0–100
-  skillsEvidencePct: number;  // 0–100 (coverage)
-  domainMismatch: boolean;    // true if outside JD domain
+  // resume-derived
+  yearsExperience: number;
+  education: string;
+  skills: string[];
+  summary: string;
 
-  // extra scoring components (OPTIONAL so UI can ignore safely)
-  yearsScore?: number;        // 0..1
-  eduScore?: number;          // 0..1
+  // scores
+  matchScore: number;          // 0–100
+  skillsEvidencePct: number;   // 0–100
+  domainMismatch: boolean;
 
-  // optional, some UIs might read these; keep them here to avoid TS errors
-  questions?: string[];
-  strengths?: string[];
-  weaknesses?: string[];
-  gaps?: string[];
-  mentoringNeeds?: string[];
-  formatted?: string;         // preformatted clipboard text
+  // detail sections (always arrays, never undefined)
+  strengths: string[];
+  weaknesses: string[];
+  gaps: string[];
+  mentoringNeeds: string[];
+
+  // Q&A (empty when domainMismatch = true)
+  questions: string[];
+
+  // extra display info (safe strings)
+  educationSummary: string;
+  formatted?: string;
 }
 
 export interface AnalysisResult {
   candidates: Candidate[];
 }
 
-/**
- * Uploaded file structure used in client pages/components.
- * Keep both `file` and `content` optional to be compatible with prior code.
- */
-export interface UploadedFile {
-  id: string;
+export type UploadedFile = {
   name: string;
   type: string;
   size: number;
-  file?: File;                          // when you store the native File object
-  content?: ArrayBuffer | Uint8Array | string; // when you cached raw content
-}
+  // content as one of the typical web upload shapes — we'll normalize in the page
+  content?: string | ArrayBuffer | Uint8Array<ArrayBufferLike>;
+  file?: File; // when available (browser)
+};
