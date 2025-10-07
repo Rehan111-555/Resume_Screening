@@ -1,3 +1,4 @@
+// app/resume-upload/page.tsx
 "use client";
 
 import { useState } from "react";
@@ -6,6 +7,30 @@ import UploadBox from "@/components/UploadBox";
 import ProgressBar from "@/components/ProgressBar";
 import { useApp } from "@/contexts/AppContext";
 import type { UploadedFile, AnalysisResult } from "@/types";
+
+/** Safely turn an UploadedFile into a real File for FormData */
+function toFile(u: UploadedFile): File {
+  // If the native File was stored, use it directly.
+  if (u.file instanceof File) return u.file;
+
+  // Normalize content into a BlobPart (string | ArrayBuffer | ArrayBufferView)
+  let part: BlobPart;
+  if (typeof u.content === "string") {
+    part = u.content;
+  } else if (u.content instanceof Uint8Array) {
+    part = u.content;
+  } else if (u.content instanceof ArrayBuffer) {
+    part = new Uint8Array(u.content);
+  } else {
+    // Fallback — empty file if nothing was captured
+    part = new Uint8Array();
+  }
+
+  // Ensure name/type exist
+  const name = u.name || "upload";
+  const type = u.type || "application/octet-stream";
+  return new File([part], name, { type });
+}
 
 export default function ResumeUploadPage() {
   const router = useRouter();
@@ -38,15 +63,23 @@ export default function ResumeUploadPage() {
       const formData = new FormData();
       formData.append("jobRequirements", JSON.stringify(jobRequirements));
       for (const f of uploadedFiles) {
-        formData.append("resumes", new File([f.content], f.name, { type: f.type }));
+        formData.append("resumes", toFile(f));
       }
 
-      const res = await fetch("/api/analyze-resumes", { method: "POST", body: formData });
+      const res = await fetch("/api/analyze-resumes", {
+        method: "POST",
+        body: formData,
+      });
+
       const raw = await res.text();
       if (!res.ok) throw new Error(raw.slice(0, 500));
 
       let data: AnalysisResult;
-      try { data = JSON.parse(raw); } catch { throw new Error(`Expected JSON but got: ${raw.slice(0, 200)}`); }
+      try {
+        data = JSON.parse(raw);
+      } catch {
+        throw new Error(`Expected JSON but got: ${raw.slice(0, 200)}`);
+      }
 
       dispatch({ type: "SET_ANALYSIS_RESULT", payload: data });
       setSuccess(`Analyzed ${data.candidates.length} candidates 🎉`);
@@ -60,12 +93,18 @@ export default function ResumeUploadPage() {
 
   return (
     <main className="max-w-4xl mx-auto px-4 py-8">
-      <ProgressBar currentStep={1} totalSteps={3} labels={["Job Requirements", "Upload Resumes", "Results"]} />
+      <ProgressBar
+        currentStep={1}
+        totalSteps={3}
+        labels={["Job Requirements", "Upload Resumes", "Results"]}
+      />
 
       <h1 className="text-3xl font-extrabold mb-2 bg-gradient-to-r from-cyan-500 via-blue-500 to-indigo-600 bg-clip-text text-transparent">
         Upload Resumes
       </h1>
-      <p className="text-gray-600 mb-6">Upload PDF or DOCX (up to 100 files). We’ll strictly analyze them against your JD.</p>
+      <p className="text-gray-600 mb-6">
+        Upload PDF or DOCX (up to 100 files). We’ll strictly analyze them against your JD.
+      </p>
 
       <UploadBox uploadedFiles={uploadedFiles} onFilesUpload={setFiles} />
 
